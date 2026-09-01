@@ -16,6 +16,12 @@ The revision and corroboration counters are nullable, with no database or model 
 
 A scout can request a replacement when its rewrite changes the fix. The server binds that decision to verified automated predecessor PRs and the exact research pass and content revision. It starts at most one replacement per version, within the scout revision cap, and stops automatic closure if another edit changes the report while the replacement runs. The first four scout notes remain individual activity entries; later notes increase the corroboration count.
 
+## Stale reports
+
+The daily sweep uses inactivity for reports without scout revisions and human silence for reports a scout has rewritten. The default windows are 14 and 21 days. Archiving requires the global `SIGNAL_STALE_REPORT_REAPER_ENABLED` setting, the `signals-stale-report-reaper` organization flag, and the project's `stale_report_sweep_enabled` preference. The migration opts existing configuration rows out; an unset preference on a new configuration permits the sweep when the other gates are enabled.
+
+The sweep checks every linked PR within its team and preserves reports with any merged implementation PR. It rechecks the report's status and clock under a row lock before archiving, so activity after the scan can keep it open. Archived reports receive a dismissal reason, and the existing post-commit dismissal handler closes eligible PRs. Human PR reviews update the human clock; bot reviews do not.
+
 ## Verification plans
 
 After research completes, actionable reports can include a `Verification plan` note for the implementation agent.

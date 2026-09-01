@@ -626,6 +626,31 @@ function PullRequestStateRows(): JSX.Element {
  * A standalone card rather than a `SetupWidgetCard` because it hosts inline controls (the switch and
  * threshold) that can't live inside that card's single button/link wrapper.
  */
+function StaleReportSweep(): JSX.Element {
+    const { staleReportSweepEnabled, teamConfigUpdating } = useValues(signalTeamConfigLogic)
+    const { patchTeamConfig } = useActions(signalTeamConfigLogic)
+
+    return (
+        <div className="flex items-start justify-between gap-2 px-2.5 py-1.5">
+            <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+                <span className="text-xs text-secondary">Archive stale reports</span>
+                <p className="text-[11px] text-tertiary leading-snug mb-0">
+                    After 14 days with no activity, or 21 days with nobody looking. Any open PR closes too, and you can
+                    restore the report.
+                </p>
+            </div>
+            <LemonSwitch
+                checked={staleReportSweepEnabled}
+                loading={teamConfigUpdating}
+                onChange={(enabled) => patchTeamConfig({ stale_report_sweep_enabled: enabled })}
+                aria-label="Archive stale reports"
+                data-attr="signals-stale-report-sweep"
+            />
+        </div>
+    )
+}
+
+
 export function SelfDrivingSection(): JSX.Element {
     // The Settings tab wraps this in its own card; the legacy setup rail does not.
     const redesign = useFeatureFlag('INBOX_REDESIGN')
@@ -735,6 +760,9 @@ export function SelfDrivingSection(): JSX.Element {
                 </div>
                 <div className="border-t border-primary">
                     <DailyReportLimit />
+                </div>
+                <div className="border-t border-primary">
+                    <StaleReportSweep />
                 </div>
             </div>
         </div>
