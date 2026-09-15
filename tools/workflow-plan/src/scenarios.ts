@@ -202,20 +202,28 @@ const SCRIPT_STUBS: Record<string, ScriptStubs> = {
             },
         },
     },
-    // The Depot shadow gates its whole graph on a sampling variable and a dice roll; plan it as sampled in.
+    // The Depot graph hangs off a routing script the planner cannot run; plan it as the engine
+    // that owns the event, which is the only case where its jobs do any work.
     '.depot/workflows/ci-backend.yml': {
-        vars: { CI_DEPOT_SHADOW_PERCENT: '100' },
-        jobOutputs: { sample: { sampled: 'true' } },
+        jobOutputs: { sample: { sampled: 'true', side_effects: 'true', route: 'depot' } },
     },
+}
+
+// Depot never runs a fork's code, so the router sends every fork pull request to GitHub Actions.
+const DEPOT_BACKEND = '.depot/workflows/ci-backend.yml'
+const ROUTED_AWAY: ScriptStubs = {
+    jobOutputs: { sample: { sampled: 'false', side_effects: 'false', route: 'github' } },
 }
 
 export function defaultScenarios(workflow: Workflow, workflowPath: string): Scenario[] {
     const steps = allFiltersChanged(workflow)
-    const common = { steps, ...SCRIPT_STUBS[path.relative(REPO_ROOT, workflowPath).split(path.sep).join('/')] }
+    const key = path.relative(REPO_ROOT, workflowPath).split(path.sep).join('/')
+    const common = { steps, ...SCRIPT_STUBS[key] }
+    const fork = { ...common, ...(key === DEPOT_BACKEND ? ROUTED_AWAY : {}) }
     return [
         { name: 'draft', github: pullRequest({ draft: true }), ...common },
         { name: 'ready', github: pullRequest(), ...common },
-        { name: 'fork', github: pullRequest({ fork: true }), ...common },
+        { name: 'fork', github: pullRequest({ fork: true }), ...fork },
         { name: 'queued', github: mergeQueue(), ...common },
         { name: 'merged', github: push(), ...common },
         { name: 'scheduled', github: schedule(), ...common },

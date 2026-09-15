@@ -135,6 +135,32 @@ const EXPECTATIONS: Expectation[] = [
             skipped: ['handle-snapshots', 'cancel-backend-on-openapi-check-failure'],
         }
     ),
+    // Routed to Depot: Depot runs the tests and the side effects, GitHub Actions relays the
+    // verdict. Every heavy job and every side effect here has to stand down, and the required
+    // gate has to keep reporting.
+    backend(
+        {
+            name: 'ready PR routed to Depot',
+            steps: {
+                changes: {
+                    route: { outputs: { route: 'depot' } },
+                    handshake: { outputs: { accepted: 'true' } },
+                },
+            },
+        },
+        {
+            runs: ['changes', 'django_tests'],
+            skipped: [
+                'django',
+                'turbo-tests',
+                'repo-checks',
+                'check-migrations',
+                'check-openapi-types',
+                'handle-snapshots',
+                'backend-coverage-report',
+            ],
+        }
+    ),
     backend(
         { name: 'merge queue', github: mergeQueue() },
         {
