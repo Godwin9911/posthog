@@ -126,6 +126,7 @@ from products.tasks.backend.presentation.serializers import (
     SlackThreadContextQuerySerializer,
     SlackThreadContextResponseSerializer,
     SlackThreadContextThreadSerializer,
+    StreamReadTokenQuerySerializer,
     StreamReadTokenResponseSerializer,
     TaskArtifactsResponseSerializer,
     TaskBasicSerializer,
@@ -2783,6 +2784,7 @@ class TaskRunViewSet(TeamAndOrgViewSetMixin, viewsets.GenericViewSet):
         return Response(ConnectionTokenResponseSerializer({"token": token}).data)
 
     @validated_request(
+        query_serializer=StreamReadTokenQuerySerializer,
         responses={
             200: OpenApiResponse(
                 response=StreamReadTokenResponseSerializer,
@@ -2791,7 +2793,11 @@ class TaskRunViewSet(TeamAndOrgViewSetMixin, viewsets.GenericViewSet):
             404: OpenApiResponse(description="Task run not found"),
         },
         summary="Get task run stream read token",
-        description="Generate a run-scoped JWT that authorizes reading this task run's live event stream via the agent-proxy.",
+        description=(
+            "Generate a run-scoped JWT that authorizes reading this task run's live event stream via the agent-proxy. "
+            "A run that keeps only a short live tail in Redis is routed to the proxy only when the client sets "
+            "resync=true, meaning it rebuilds from the durable run log when the proxy reports a trimmed cursor."
+        ),
     )
     @action(
         detail=True,
@@ -2805,12 +2811,10 @@ class TaskRunViewSet(TeamAndOrgViewSetMixin, viewsets.GenericViewSet):
         token = tasks_facade.create_task_run_stream_read_token(pk, task_id, self.team_id)
         if stream_info is None or token is None:
             raise NotFound()
-        # Only the Django read leg serves the durable backlog, so thin-tail runs must
-        # not be routed to the agent-proxy — a proxy reader would silently lose
-        # everything behind the 500-entry live window.
+        client_can_resync = bool(getattr(request, "validated_query_data", {}).get("resync"))
         stream_base_url = (
             None
-            if run_stream_thin_tail(stream_info.state)
+            if run_stream_thin_tail(stream_info.state) and not client_can_resync
             else tasks_facade.resolve_stream_base_url(
                 distinct_id=request.user.distinct_id,
                 organization_id=self.team.organization_id,
