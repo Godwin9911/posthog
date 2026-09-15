@@ -1,9 +1,19 @@
 # Backend CI routing between GitHub Actions and Depot CI
 
-Each Backend CI event runs on exactly one engine. Both workflows call
-`.github/scripts/ci_backend_route.py` from their first job and skip every heavy
-job when the answer is not them, so the tests and their side effects (snapshot
-commits, uploads, comment posters, telemetry) never run twice.
+Each pull request is meant to run its Backend CI on exactly one engine. Both
+workflows call `.github/scripts/ci_backend_route.py` from their first job and skip
+every heavy job when the answer is not them, so the tests and their side effects
+(snapshot commits, uploads, comment posters, telemetry) run on one engine only.
+
+Master pushes are the deliberate exception. They run no tests, they only prime each
+engine's own schema cache, so both engines take them once the percent is above 0.
+
+One case can still run both. GitHub Actions waits up to two minutes for Depot to
+accept the route, then runs the tests itself. A Depot run that starts after that
+wait gives the event two full runs. It cannot give a false green, because the
+required check still relays Depot's verdict. Measured over 37 pull requests,
+Depot's `changes` job started 4 to 35 seconds after GitHub's, so treat a double
+run as a tripwire to watch during the ramp, not an expected state.
 
 ## The switch
 
@@ -12,7 +22,12 @@ commits, uploads, comment posters, telemetry) never run twice.
   one engine across pushes. GitHub Actions reads it through `vars`; Depot CI reads
   it through the REST API with its ambient token. Unreadable or invalid means 0.
 - Labels override the percent for one PR: `ci-backend-github` wins over
-  `ci-backend-depot`. Fork PRs and `no-ci` drafts always route to GitHub.
+  `ci-backend-depot`. A label applies to that PR only. A merge-queue PR on a
+  `trunk-merge/` branch carries no labels of its own and routes by its own number,
+  so set the percent to 0 to take the queue off Depot.
+- Fork PRs always route to GitHub Actions. A `no-ci` draft runs on neither engine:
+  it skips the GitHub workflow outright, and Depot never picks up what GitHub
+  declined.
 - Manual dispatches run on the engine that received them. Master pushes prime
   each engine's own schema cache, on Depot only while the percent is above 0.
 
@@ -30,6 +45,13 @@ routed to Depot, that job relays Depot's gate conclusion instead of running the
 matrix. Branch protection does not change during the rollout.
 
 Hourly scheduling and `mirror-schema-cache` remain on GitHub Actions for now.
+
+A Depot run that is routed away stops at its `sample` job. It restores no caches
+and writes none, so it costs a few seconds of a 2 vCPU runner.
+
+The drift checker in `ci-backend-shadow-drift.yml` stays for the whole rollout.
+Fork pull requests keep running the GitHub Actions matrix, so both workflows stay
+live and both have to keep their shared composites in step.
 
 ## Trunk uploads and quarantine
 
@@ -51,6 +73,15 @@ The PR records the proof run. The probe verified JUnit contents and a hidden
 `.test_durations` file across jobs. A pattern matching one artifact extracts
 directly into the destination; named downloads do too. Retention expiry and
 rerun replacement remain unverified.
+
+## Snapshots
+
+Depot pins the snapshot mode to `check`. The steps that upload the snapshot patch
+and commit it back are not ported, so an update-mode run would rewrite the
+snapshots on the runner, throw them away, and pass a stale snapshot through to
+master. A routed PR with stale snapshots goes red instead of getting a bot commit.
+The author regenerates them locally, or applies the `ci-backend-github` label to
+get the commit back. Port `handle-snapshots` before raising the percent.
 
 ## Cutover blockers
 
