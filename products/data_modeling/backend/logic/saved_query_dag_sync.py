@@ -201,6 +201,16 @@ def _rollback_created_node(node: Node, created: bool) -> None:
         )
 
 
+def _lock_dag(team_id: int, dag_id) -> None:
+    """Serialize against every other writer of this DAG's edges.
+
+    The same key `Edge._detect_cycles` takes, so an edge write and a node delete cannot interleave.
+    Callers holding more than one DAG take them in a fixed order, so two of them cannot deadlock.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", [team_id, str(dag_id)])
+
+
 def replace_incoming_edges(
     target: Node,
     dependency_names: Iterable[str],
@@ -223,8 +233,7 @@ def replace_incoming_edges(
     """
     unresolved: list[str] = []
     with transaction.atomic():
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", [team.pk, str(dag.id)])
+        _lock_dag(team.pk, dag.id)
         Node.objects.select_for_update().filter(pk=target.pk).first()
         Edge.objects.filter(team=team, target=target).delete()
         for dependency_name in dependency_names:
@@ -388,11 +397,18 @@ DEPENDENT_KIND_LABELS = {
 MAX_NAMED_DEPENDENTS = 3
 
 
-def _dependent_metric_names(node: Node) -> list[str]:
-    return list(
-        Node.objects.filter(team_id=node.team_id, incoming_edges__source=node, type=NodeType.METRIC)
-        .order_by("name")
-        .values_list("name", flat=True)
+def _dependent_metric_names(nodes: QuerySet[Node]) -> list[str]:
+    """Metric names reading any of `nodes`.
+
+    Every node of the saved query counts, not just one: the delete removes all of them, so a metric
+    hanging off a second DAG's node would lose its edge without ever blocking the delete.
+    """
+    return sorted(
+        set(
+            Node.objects.filter(
+                team_id__in=nodes.values("team_id"), incoming_edges__source__in=nodes, type=NodeType.METRIC
+            ).values_list("name", flat=True)
+        )
     )
 
 
@@ -412,23 +428,27 @@ def delete_node_from_dag(saved_query: "DataWarehouseSavedQuery") -> None:
 
     Must be called BEFORE soft_delete() due to on_delete=PROTECT on the saved_query FK.
     """
-    node = Node.objects.filter(team=saved_query.team, saved_query=saved_query).first()
-    query_dependents = [
-        (dependent.name, DEPENDENT_KIND_LABELS.get(node_type_for(dependent), "view"))
-        for dependent in get_dependent_saved_queries(saved_query)
-    ]
-    metric_dependents = (
-        [(name, DEPENDENT_KIND_LABELS[NodeType.METRIC]) for name in _dependent_metric_names(node)] if node else []
-    )
-    dependents = query_dependents + metric_dependents
-    if dependents:
-        raise HasDependentsError(
-            describe_dependents(saved_query.name, dependents),
-            node_id=str(node.id) if node else None,
-        )
     nodes = Node.objects.filter(team=saved_query.team, saved_query=saved_query).select_related("dag", "dag__team")
-    dags = {node.dag for node in nodes if node.dag is not None}
-    nodes.delete()
+    with transaction.atomic():
+        # Hold every DAG this query has a node in, so a sync cannot attach a dependent between the
+        # check below and the delete that would cascade its edge away.
+        dags = sorted({node.dag for node in nodes if node.dag is not None}, key=lambda dag: str(dag.id))
+        for dag in dags:
+            _lock_dag(saved_query.team_id, dag.id)
+
+        query_dependents = [
+            (dependent.name, DEPENDENT_KIND_LABELS.get(node_type_for(dependent), "view"))
+            for dependent in get_dependent_saved_queries(saved_query)
+        ]
+        metric_dependents = [(name, DEPENDENT_KIND_LABELS[NodeType.METRIC]) for name in _dependent_metric_names(nodes)]
+        dependents = query_dependents + metric_dependents
+        if dependents:
+            first_node = nodes.order_by("created_at").first()
+            raise HasDependentsError(
+                describe_dependents(saved_query.name, dependents),
+                node_id=str(first_node.id) if first_node else None,
+            )
+        nodes.delete()
     for dag in dags:
         maybe_reconcile_dag(dag)
 

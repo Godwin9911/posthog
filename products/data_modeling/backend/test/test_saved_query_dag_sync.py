@@ -490,6 +490,7 @@ class TestDeleteNodeFromDag(BaseTest):
             query={"query": "SELECT * FROM events", "kind": "HogQLQuery"},
         )
         upstream_node = sync_saved_query_to_dag(upstream)
+        assert upstream_node is not None
         metric = Node.objects.create(
             team=self.team,
             dag=upstream_node.dag,
@@ -508,6 +509,31 @@ class TestDeleteNodeFromDag(BaseTest):
             "Update or delete them first.",
         )
         self.assertEqual(context.exception.node_id, str(upstream_node.id))
+
+    def test_delete_finds_a_metric_hanging_off_any_of_the_querys_nodes(self):
+        upstream = DataWarehouseSavedQuery.objects.create(
+            name="upstream_view",
+            team=self.team,
+            query={"query": "SELECT * FROM events", "kind": "HogQLQuery"},
+        )
+        managed_dag = DAG.get_or_create_revenue_analytics(self.team)
+        managed_node = sync_saved_query_to_dag(upstream, dag=managed_dag, allow_managed=True)
+        default_node = sync_saved_query_to_dag(upstream)
+        assert managed_node is not None and default_node is not None
+        metric = Node.objects.create(
+            team=self.team,
+            dag=default_node.dag,
+            name="weekly_active_accounts",
+            type=NodeType.METRIC,
+            metric_id=uuid4(),
+        )
+        Edge.objects.create(team=self.team, dag=default_node.dag, source=default_node, target=metric)
+        self.assertNotEqual(managed_node.id, default_node.id)
+
+        with self.assertRaises(HasDependentsError) as context:
+            delete_node_from_dag(upstream)
+
+        self.assertIn("weekly_active_accounts (metric)", str(context.exception))
 
     def test_delete_succeeds_when_no_dependents(self):
         upstream = DataWarehouseSavedQuery.objects.create(
