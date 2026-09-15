@@ -108,6 +108,10 @@ jobs:
     changes:
         runs-on: depot-ubuntu-24.04
         timeout-minutes: 5
+        permissions:
+            contents: read
+            pull-requests: read # the paths filter lists the PR's files
+            checks: read # the routing handshake reads Depot's own check runs
         # A draft PR labeled `no-ci` skips this workflow entirely (prototypes):
         # every other job needs this one, and the gates treat skipped as success.
         # ready_for_review re-runs everything, so the merge gate is unaffected.
@@ -445,15 +449,26 @@ jobs:
               id: handshake
               if: steps.route.outputs.route == 'depot'
               env:
-                  GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+                  # The job token, not the paths-filter App token: that App is scoped for the
+                  # filter and its Checks access is not granted here.
+                  GH_TOKEN: ${{ github.token }}
                   REPO: ${{ github.repository }}
                   SHA: ${{ github.event.pull_request.head.sha || github.sha }}
               run: |
-                  set -euo pipefail
+                  set -uo pipefail
                   accepted=false
+                  state=unknown
+                  url="https://api.github.com/repos/$REPO/commits/$SHA/check-runs?check_name=$(jq -rn --arg n "$DEPOT_CHANGES_CHECK" '$n | @uri')&app_id=$DEPOT_APP_ID"
                   for attempt in $(seq 1 12); do
-                      state=$(gh api -X GET "repos/$REPO/commits/$SHA/check-runs" -f check_name="$DEPOT_CHANGES_CHECK" -f app_id="$DEPOT_APP_ID" \
-                          --jq '[.check_runs[]] | max_by(.id) | if . == null then "absent" elif .status == "completed" then .conclusion else .status end' || echo "error")
+                      code=$(curl -s -o /tmp/handshake-body -w '%{http_code}' --max-time 15 \
+                          -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$url")
+                      case "$code" in
+                          200) state=$(jq -r '[.check_runs[]] | max_by(.id) | if . == null then "absent" elif .status == "completed" then .conclusion else .status end' /tmp/handshake-body) ;;
+                          # A refused credential will not become valid inside this loop, so stop
+                          # waiting and let GitHub Actions run the tests.
+                          401|403) echo "::warning::check-runs API returned $code; cannot read Depot's route"; break ;;
+                          *) state="error" ;;
+                      esac
                       case "$state" in
                           in_progress|success|failure|cancelled) accepted=true; break ;;
                           skipped|neutral) break ;;
@@ -3944,6 +3959,10 @@ jobs:
             ]
         name: Django Tests Pass
         runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            actions: read # the failure rollup downloads each shard's JUnit artifact
+            checks: read # the relay reads Depot's gate check run
         # Headroom for downloading every shard's JUnit for the failure rollup, or for
         # waiting out a full Depot run when this job only relays its verdict.
         timeout-minutes: ${{ needs.changes.outputs.engine == 'depot' && 95 || 8 }}
@@ -3970,23 +3989,37 @@ jobs:
               run: |
                   set -uo pipefail
                   deadline=$((SECONDS + 5400))
+                  refusals=0
                   url="https://api.github.com/repos/$REPO/commits/$SHA/check-runs?check_name=$(jq -rn --arg n "$DEPOT_GATE_CHECK" '$n | @uri')&app_id=$DEPOT_APP_ID"
                   while [ "$SECONDS" -lt "$deadline" ]; do
                       # curl rewrites the saved ETag empty on a 304, so promote it only after a 200.
-                      code=$(curl -s -o /tmp/relay-body -w '%{http_code}' --etag-compare /tmp/relay-etag --etag-save /tmp/relay-etag.new \
+                      code=$(curl -s -o /tmp/relay-body -w '%{http_code}' --max-time 30 --etag-compare /tmp/relay-etag --etag-save /tmp/relay-etag.new \
                           -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$url")
-                      if [ "$code" = "200" ]; then
-                          mv /tmp/relay-etag.new /tmp/relay-etag
-                          verdict=$(jq -r '[.check_runs[]] | max_by(.id) | if . == null then "absent" elif .status == "completed" then .conclusion else .status end' /tmp/relay-body)
-                          echo "Depot gate: $verdict"
-                          case "$verdict" in
-                              success) exit 0 ;;
-                              queued|in_progress|absent|pending|waiting|requested) ;;
-                              *) echo "::error::Depot gate concluded $verdict for $SHA"; exit 1 ;;
-                          esac
-                      elif [ "$code" != "304" ]; then
-                          echo "::warning::check-runs API returned $code"
-                      fi
+                      case "$code" in
+                          200)
+                              refusals=0
+                              mv /tmp/relay-etag.new /tmp/relay-etag
+                              verdict=$(jq -r '[.check_runs[]] | max_by(.id) | if . == null then "absent" elif .status == "completed" then .conclusion else .status end' /tmp/relay-body)
+                              echo "Depot gate: $verdict"
+                              case "$verdict" in
+                                  success) exit 0 ;;
+                                  queued|in_progress|absent|pending|waiting|requested) ;;
+                                  *) echo "::error::Depot gate concluded $verdict for $SHA"; exit 1 ;;
+                              esac
+                              ;;
+                          304) refusals=0 ;;
+                          # 403 also covers a secondary rate limit, which does clear, so spend a
+                          # few retries before calling the credential broken.
+                          401|403)
+                              refusals=$((refusals + 1))
+                              echo "::warning::check-runs API returned $code ($refusals in a row)"
+                              if [ "$refusals" -ge 5 ]; then
+                                  echo "::error::Cannot read Depot's gate check for $SHA; this job cannot relay a verdict"
+                                  exit 1
+                              fi
+                              ;;
+                          *) echo "::warning::check-runs API returned $code" ;;
+                      esac
                       sleep 30
                   done
                   echo "::error::No Depot verdict for $SHA within 90 minutes"
