@@ -221,10 +221,13 @@ class DataWarehouseSavedQueryViewSet(TeamAndOrgViewSetMixin, AccessControlViewSe
         name = instance.name
         try:
             lifecycle.delete_saved_query(instance)
-        except HasDependentsError:
-            raise serializers.ValidationError(
-                "Cannot delete this view because other views depend on it. Delete or update those views first."
-            )
+        except HasDependentsError as dependents_error:
+            # exceptions_hog renders only str / list / {field: message} details, so the node id
+            # travels on `extra`, which it attaches to the response verbatim.
+            error = serializers.ValidationError(str(dependents_error))
+            if dependents_error.node_id:
+                error.extra = {"node_id": dependents_error.node_id}
+            raise error
 
         log_activity(
             organization_id=self.team.organization_id,

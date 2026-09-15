@@ -1,6 +1,7 @@
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Literal
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import Q, QuerySet
 
 import structlog
@@ -200,6 +201,56 @@ def _rollback_created_node(node: Node, created: bool) -> None:
         )
 
 
+def replace_incoming_edges(
+    target: Node,
+    dependency_names: Iterable[str],
+    *,
+    team: "Team",
+    dag: DAG,
+    database: Database,
+    on_unresolved: Literal["raise", "skip"],
+    extra_properties: dict | None = None,
+) -> list[str]:
+    """Rebuild every incoming edge of `target` from `dependency_names`, and report what did not resolve.
+
+    The whole replacement runs in one transaction behind the advisory lock `Edge.save` already takes,
+    so two concurrent syncs of the same node run one after the other instead of leaving the union of
+    both edge sets, and a failure part-way through leaves the previous edges in place rather than an
+    edge-less node.
+
+    With `on_unresolved="skip"` a name that matches no node is collected and returned; with "raise"
+    it propagates.
+    """
+    unresolved: list[str] = []
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", [team.pk, str(dag.id)])
+        Node.objects.select_for_update().filter(pk=target.pk).first()
+        Edge.objects.filter(team=team, target=target).delete()
+        for dependency_name in dependency_names:
+            try:
+                source = resolve_dependency_to_node(dependency_name, team, database, dag)
+            except (UnknownParentError, Node.DoesNotExist):
+                if on_unresolved == "raise":
+                    raise
+                logger.warning(
+                    "Skipped an unresolvable lineage dependency",
+                    dependency_name=dependency_name,
+                    node_id=str(target.pk),
+                    team_id=team.pk,
+                )
+                unresolved.append(dependency_name)
+                continue
+            Edge.objects.create(
+                team=team,
+                dag=dag,
+                source=source,
+                target=target,
+                properties=extra_properties or {},
+            )
+    return unresolved
+
+
 def sync_saved_query_to_dag(
     saved_query: "DataWarehouseSavedQuery",
     extra_properties: dict | None = None,  # TODO(andrew): remove this after backfill
@@ -260,22 +311,19 @@ def sync_saved_query_to_dag(
             bypass_warehouse_access_control=True,
             allowed_system_tables=DATA_MODELING_ALLOWED_SYSTEM_TABLES,
         )
-    # clear previous incoming edges, dependencies may have changed
-    Edge.objects.filter(team=team, target=target).delete()
-
     # parse query to extract dependencies and create edges
     try:
         model_name = saved_query.name
         dependencies = get_parents_from_model_query(team, model_name, model_query, database=database)
-        for dependency_name in dependencies:
-            source = resolve_dependency_to_node(dependency_name, team, database, dag)
-            Edge.objects.create(
-                team=team,
-                dag=dag,
-                source=source,
-                target=target,
-                properties=extra_properties,
-            )
+        replace_incoming_edges(
+            target,
+            dependencies,
+            team=team,
+            dag=dag,
+            database=database,
+            on_unresolved="raise",
+            extra_properties=extra_properties,
+        )
     except Exception:
         _rollback_created_node(target, created)
         raise
@@ -296,7 +344,9 @@ def sync_saved_query_to_dag(
 class HasDependentsError(Exception):
     """Raised when attempting to delete a saved query that has dependents."""
 
-    pass
+    def __init__(self, message: str, node_id: str | None = None) -> None:
+        super().__init__(message)
+        self.node_id = node_id
 
 
 class MissingDagNodeError(Exception):
@@ -328,15 +378,54 @@ def get_dependent_saved_queries(saved_query: "DataWarehouseSavedQuery") -> list[
     return [d.saved_query for d in deps if d.saved_query and not d.saved_query.deleted]
 
 
+DEPENDENT_KIND_LABELS = {
+    NodeType.VIEW: "view",
+    NodeType.MAT_VIEW: "materialized view",
+    NodeType.ENDPOINT: "endpoint",
+    NodeType.METRIC: "metric",
+}
+
+MAX_NAMED_DEPENDENTS = 3
+
+
+def _dependent_metric_names(node: Node) -> list[str]:
+    return list(
+        Node.objects.filter(team_id=node.team_id, incoming_edges__source=node, type=NodeType.METRIC)
+        .order_by("name")
+        .values_list("name", flat=True)
+    )
+
+
+def describe_dependents(view_name: str, dependents: list[tuple[str, str]]) -> str:
+    """The message a person reads when a delete is refused, naming at most three dependents."""
+    named = dependents[:MAX_NAMED_DEPENDENTS]
+    listed = ", ".join(f"{name} ({kind})" for name, kind in named)
+    remaining = len(dependents) - len(named)
+    if remaining:
+        listed = f"{listed}, and {remaining} more"
+    return f"Can't delete {view_name} yet. These read from it: {listed}. Update or delete them first."
+
+
 def delete_node_from_dag(saved_query: "DataWarehouseSavedQuery") -> None:
     """
     Delete the Node for a SavedQuery (cascades to edges)
 
     Must be called BEFORE soft_delete() due to on_delete=PROTECT on the saved_query FK.
     """
-    deps = get_dependent_saved_queries(saved_query)
-    if deps:
-        raise HasDependentsError("Node cannot be deleted because it has dependents")
+    node = Node.objects.filter(team=saved_query.team, saved_query=saved_query).first()
+    query_dependents = [
+        (dependent.name, DEPENDENT_KIND_LABELS.get(node_type_for(dependent), "view"))
+        for dependent in get_dependent_saved_queries(saved_query)
+    ]
+    metric_dependents = (
+        [(name, DEPENDENT_KIND_LABELS[NodeType.METRIC]) for name in _dependent_metric_names(node)] if node else []
+    )
+    dependents = query_dependents + metric_dependents
+    if dependents:
+        raise HasDependentsError(
+            describe_dependents(saved_query.name, dependents),
+            node_id=str(node.id) if node else None,
+        )
     nodes = Node.objects.filter(team=saved_query.team, saved_query=saved_query).select_related("dag", "dag__team")
     dags = {node.dag for node in nodes if node.dag is not None}
     nodes.delete()
