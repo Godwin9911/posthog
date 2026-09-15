@@ -261,6 +261,42 @@ describe("CloudTaskEngine", () => {
                 },
               },
             },
+            {
+              type: "notification",
+              timestamp: "2026-01-01T00:00:02Z",
+              event_id: "boot-2",
+              first_event_id: "boot-1",
+              covered_event_ids: 5 as unknown as string[],
+              notification: {
+                jsonrpc: "2.0",
+                method: "session/update",
+                params: {
+                  sessionId: "run-1",
+                  update: {
+                    sessionUpdate: "agent_message",
+                    content: { type: "text", text: "hi there" },
+                  },
+                },
+              },
+            },
+            {
+              type: "notification",
+              timestamp: "2026-01-01T00:00:05Z",
+              event_id: "boot-6",
+              covered_event_ids: ["boot-4"],
+              notification: {
+                jsonrpc: "2.0",
+                method: "session/update",
+                params: {
+                  sessionId: "run-1",
+                  update: {
+                    sessionUpdate: "tool_call_update",
+                    toolCallId: "tool-7",
+                    status: "completed",
+                  },
+                },
+              },
+            },
           ],
           200,
           { "X-Has-More": "false" },
@@ -269,7 +305,7 @@ describe("CloudTaskEngine", () => {
 
     mockStreamFetch.mockResolvedValueOnce(
       createOpenSseResponse(
-        'id: 1\ndata: {"type":"notification","timestamp":"2026-01-01T00:00:01Z","notification":{"jsonrpc":"2.0","method":"_posthog/console","params":{"sessionId":"run-1","level":"info","message":"hello"}}}\n\nid: 2\ndata: {"type":"notification","timestamp":"2026-01-01T00:00:02Z","notification":{"jsonrpc":"2.0","method":"_posthog/console","params":{"sessionId":"run-1","level":"info","message":"live tail"}}}\n\n',
+        'id: 1\ndata: {"type":"notification","timestamp":"2026-01-01T00:00:01Z","notification":{"jsonrpc":"2.0","method":"_posthog/console","params":{"sessionId":"run-1","level":"info","message":"hello"}}}\n\nid: 2\ndata: {"type":"notification","timestamp":"2026-01-01T00:00:02Z","notification":{"jsonrpc":"2.0","method":"_posthog/console","params":{"sessionId":"run-1","level":"info","message":"live tail"}}}\n\nid: 3\ndata: {"type":"notification","timestamp":"2026-01-01T00:00:02Z","event_id":"boot-1","notification":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"run-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi "}}}}}\n\nid: 4\ndata: {"type":"notification","timestamp":"2026-01-01T00:00:03Z","event_id":"boot-2","notification":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"run-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"there"}}}}}\n\nid: 5\ndata: {"type":"notification","timestamp":"2026-01-01T00:00:04Z","event_id":"boot-3","notification":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"run-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"!"}}}}}\n\nid: 6\ndata: {"type":"notification","timestamp":"2026-01-01T00:00:05Z","event_id":"boot-4","notification":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"run-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-7","status":"in_progress"}}}}\n\nid: 7\ndata: {"type":"notification","timestamp":"2026-01-01T00:00:05Z","event_id":"boot-5","notification":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"run-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-8","status":"in_progress"}}}}\n\nid: 8\ndata: {"type":"notification","timestamp":"2026-01-01T00:00:05Z","event_id":"boot-6","notification":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"run-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-7","status":"completed"}}}}\n\n',
       ),
     );
 
@@ -314,8 +350,44 @@ describe("CloudTaskEngine", () => {
               },
             },
           },
+          {
+            type: "notification",
+            timestamp: "2026-01-01T00:00:02Z",
+            event_id: "boot-2",
+            first_event_id: "boot-1",
+            covered_event_ids: 5,
+            notification: {
+              jsonrpc: "2.0",
+              method: "session/update",
+              params: {
+                sessionId: "run-1",
+                update: {
+                  sessionUpdate: "agent_message",
+                  content: { type: "text", text: "hi there" },
+                },
+              },
+            },
+          },
+          {
+            type: "notification",
+            timestamp: "2026-01-01T00:00:05Z",
+            event_id: "boot-6",
+            covered_event_ids: ["boot-4"],
+            notification: {
+              jsonrpc: "2.0",
+              method: "session/update",
+              params: {
+                sessionId: "run-1",
+                update: {
+                  sessionUpdate: "tool_call_update",
+                  toolCallId: "tool-7",
+                  status: "completed",
+                },
+              },
+            },
+          },
         ],
-        totalEntryCount: 2,
+        totalEntryCount: 4,
         status: "in_progress",
         stage: "build",
         output: null,
@@ -340,8 +412,41 @@ describe("CloudTaskEngine", () => {
               },
             },
           },
+          {
+            type: "notification",
+            timestamp: "2026-01-01T00:00:04Z",
+            event_id: "boot-3",
+            notification: {
+              jsonrpc: "2.0",
+              method: "session/update",
+              params: {
+                sessionId: "run-1",
+                update: {
+                  sessionUpdate: "agent_message_chunk",
+                  content: { type: "text", text: "!" },
+                },
+              },
+            },
+          },
+          {
+            type: "notification",
+            timestamp: "2026-01-01T00:00:05Z",
+            event_id: "boot-5",
+            notification: {
+              jsonrpc: "2.0",
+              method: "session/update",
+              params: {
+                sessionId: "run-1",
+                update: {
+                  sessionUpdate: "tool_call_update",
+                  toolCallId: "tool-8",
+                  status: "in_progress",
+                },
+              },
+            },
+          },
         ],
-        totalEntryCount: 3,
+        totalEntryCount: 7,
       },
     ]);
 
@@ -1545,6 +1650,292 @@ describe("CloudTaskEngine", () => {
     expect((init?.headers as Record<string, string>)?.Authorization).toBe(
       "Bearer proxy-token",
     );
+  });
+
+  it.each([
+    { name: "fresh", resumeFromEntryCount: undefined, logFetches: 2 },
+    { name: "resumed", resumeFromEntryCount: 3, logFetches: 1 },
+  ])(
+    "rebuilds a $name watch from history when the proxy reports a trimmed resume position",
+    async ({ resumeFromEntryCount, logFetches }) => {
+      vi.useFakeTimers();
+
+      const updates: unknown[] = [];
+      service.on(CloudTaskEvent.Update, (payload) => updates.push(payload));
+
+      mockStreamTokenFetch.mockImplementation(() =>
+        Promise.resolve(
+          createJsonResponse({
+            token: "proxy-token",
+            stream_base_url: "https://proxy.example",
+          }),
+        ),
+      );
+
+      let sessionLogsFetches = 0;
+      mockNetFetch.mockImplementation((input: string | Request) => {
+        const url = typeof input === "string" ? input : input.url;
+        if (url.includes("/session_logs/")) {
+          sessionLogsFetches += 1;
+          return Promise.resolve(
+            createJsonResponse([], 200, { "X-Has-More": "false" }),
+          );
+        }
+        return Promise.resolve(
+          createJsonResponse({
+            id: "run-1",
+            status: "in_progress",
+            stage: null,
+            output: null,
+            error_message: null,
+            branch: "main",
+            updated_at: "2026-01-01T00:00:00Z",
+          }),
+        );
+      });
+
+      mockStreamFetch
+        .mockImplementationOnce(() =>
+          Promise.resolve(
+            createSseResponse(
+              'id: 5-0\ndata: {"type":"notification","method":"session/update"}\n\n',
+            ),
+          ),
+        )
+        .mockImplementationOnce(() =>
+          Promise.resolve(
+            createSseResponse(
+              'event: end\ndata: {"type":"resync","reason":"trimmed"}\n\n',
+            ),
+          ),
+        )
+        .mockImplementation(() => Promise.resolve(createOpenSseResponse("")));
+
+      service.watch({
+        taskId: "task-1",
+        runId: "run-1",
+        apiHost: "https://app.example.com",
+        teamId: 2,
+        resumeFromEntryCount,
+      });
+
+      await waitFor(() => mockStreamFetch.mock.calls.length >= 3, 20_000);
+
+      expect(String(mockStreamTokenFetch.mock.calls[0][0])).toContain(
+        "stream_token/?resync=1",
+      );
+      const [resumeUrl, resumeInit] = mockStreamFetch.mock.calls[1];
+      expect(String(resumeUrl)).toContain("resync=1");
+      expect(
+        (resumeInit?.headers as Record<string, string>)["Last-Event-ID"],
+      ).toBe("5-0");
+
+      const [rebuiltUrl, rebuiltInit] = mockStreamFetch.mock.calls[2];
+      expect(String(rebuiltUrl)).not.toContain("start=latest");
+      expect(
+        (rebuiltInit?.headers as Record<string, string>)["Last-Event-ID"],
+      ).toBeUndefined();
+      expect(sessionLogsFetches).toBe(logFetches);
+      expect(mockStreamTokenFetch.mock.calls.length).toBe(2);
+      const snapshots = updates.filter(
+        (u) => (u as { kind?: string }).kind === "snapshot",
+      ) as Array<{ newEntries: unknown[]; rebuilt?: boolean }>;
+      expect(snapshots).toHaveLength(logFetches);
+      expect(snapshots[snapshots.length - 1]).toMatchObject({
+        rebuilt: true,
+        newEntries: [{ type: "notification", method: "session/update" }],
+      });
+      expect(snapshots[0].rebuilt).toBe(logFetches === 1 ? true : undefined);
+      expect(
+        updates.some((u) => (u as { kind?: string }).kind === "error"),
+      ).toBe(false);
+    },
+  );
+
+  it("rebuilds from a bounded window that still covers every retained live entry", async () => {
+    vi.useFakeTimers();
+
+    const updates: unknown[] = [];
+    service.on(CloudTaskEvent.Update, (payload) => updates.push(payload));
+
+    mockStreamTokenFetch.mockImplementation(() =>
+      Promise.resolve(
+        createJsonResponse({
+          token: "proxy-token",
+          stream_base_url: "https://proxy.example",
+        }),
+      ),
+    );
+
+    const liveCount = TRANSCRIPT_TAIL_WINDOW + 100;
+    const chain = Array.from({ length: liveCount }, (_, i) => ({
+      type: "notification",
+      timestamp: "2026-01-01T00:00:00Z",
+      event_id: `boot-${i}`,
+      notification: {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "run-1",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: `tool-${i}`,
+            status: "completed",
+          },
+        },
+      },
+    }));
+    let persistedCount = 0;
+    let probes = 0;
+    mockNetFetch.mockImplementation((input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url,
+      );
+      if (!url.pathname.includes("/session_logs/")) {
+        return Promise.resolve(
+          createJsonResponse({
+            id: "run-1",
+            status: "in_progress",
+            stage: null,
+            output: null,
+            error_message: null,
+            branch: "main",
+            updated_at: "2026-01-01T00:00:00Z",
+          }),
+        );
+      }
+      const offset = Number(url.searchParams.get("offset") ?? "0");
+      const limit = Number(url.searchParams.get("limit"));
+      if (offset === 0 && limit === 1) {
+        probes += 1;
+        persistedCount = probes === 1 ? 0 : chain.length;
+      }
+      const page = chain.slice(
+        offset,
+        Math.min(offset + limit, persistedCount),
+      );
+      return Promise.resolve(
+        createJsonResponse(page, 200, {
+          "X-Has-More": String(offset + page.length < persistedCount),
+          "X-Matching-Count": String(persistedCount),
+        }),
+      );
+    });
+
+    const liveFrames = chain
+      .map((entry, i) => `id: ${i + 1}\ndata: ${JSON.stringify(entry)}\n\n`)
+      .join("");
+    mockStreamFetch
+      .mockImplementationOnce(() =>
+        Promise.resolve(createSseResponse(liveFrames)),
+      )
+      .mockImplementationOnce(() =>
+        Promise.resolve(
+          createSseResponse(
+            'event: end\ndata: {"type":"resync","reason":"trimmed"}\n\n',
+          ),
+        ),
+      )
+      .mockImplementation(() => Promise.resolve(createOpenSseResponse("")));
+
+    service.watch({
+      taskId: "task-1",
+      runId: "run-1",
+      apiHost: "https://app.example.com",
+      teamId: 2,
+    });
+
+    await waitFor(
+      () =>
+        updates.filter(
+          (u) =>
+            (u as { kind?: string; rebuilt?: boolean }).kind === "snapshot" &&
+            (u as { rebuilt?: boolean }).rebuilt === true,
+        ).length === 1,
+      20_000,
+    );
+
+    const rebuilt = updates.filter(
+      (u) => (u as { rebuilt?: boolean }).rebuilt === true,
+    ) as Array<{
+      newEntries: unknown[];
+      totalEntryCount: number;
+      windowStart?: number;
+    }>;
+    const windowStart = liveCount - TRANSCRIPT_TAIL_WINDOW;
+    expect(rebuilt[0].windowStart).toBe(windowStart);
+    expect(rebuilt[0].newEntries).toEqual(chain.slice(windowStart));
+    expect(rebuilt[0].totalEntryCount).toBe(chain.length);
+  });
+
+  it("keeps replaying the stream window when the rebuilt connection dies before its first event", async () => {
+    vi.useFakeTimers();
+
+    mockStreamTokenFetch.mockImplementation(() =>
+      Promise.resolve(
+        createJsonResponse({
+          token: "proxy-token",
+          stream_base_url: "https://proxy.example",
+        }),
+      ),
+    );
+
+    mockNetFetch.mockImplementation((input: string | Request) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (url.includes("/session_logs/")) {
+        return Promise.resolve(
+          createJsonResponse([], 200, { "X-Has-More": "false" }),
+        );
+      }
+      return Promise.resolve(
+        createJsonResponse({
+          id: "run-1",
+          status: "in_progress",
+          stage: null,
+          output: null,
+          error_message: null,
+          branch: "main",
+          updated_at: "2026-01-01T00:00:00Z",
+        }),
+      );
+    });
+
+    mockStreamFetch
+      .mockImplementationOnce(() =>
+        Promise.resolve(
+          createSseResponse(
+            'id: 5-0\ndata: {"type":"notification","method":"session/update"}\n\n',
+          ),
+        ),
+      )
+      .mockImplementationOnce(() =>
+        Promise.resolve(
+          createSseResponse(
+            'event: end\ndata: {"type":"resync","reason":"trimmed"}\n\n',
+          ),
+        ),
+      )
+      .mockImplementationOnce(() => Promise.resolve(createSseResponse("")))
+      .mockImplementation(() => Promise.resolve(createOpenSseResponse("")));
+
+    service.watch({
+      taskId: "task-1",
+      runId: "run-1",
+      apiHost: "https://app.example.com",
+      teamId: 2,
+    });
+
+    await waitFor(() => mockStreamFetch.mock.calls.length >= 4, 20_000);
+
+    const [retriedUrl, retriedInit] = mockStreamFetch.mock.calls[3];
+    expect(String(retriedUrl)).not.toContain("start=latest");
+    expect(
+      (retriedInit?.headers as Record<string, string>)["Last-Event-ID"],
+    ).toBeUndefined();
   });
 
   it("drops the resume position when the stream leg changes", async () => {

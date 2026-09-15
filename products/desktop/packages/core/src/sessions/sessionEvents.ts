@@ -504,11 +504,10 @@ export function isSteerPromptParams(params: unknown): boolean {
  * echoes. Pinned bubbles are left alone: the initial prompt is deduped against
  * its echo by the merge layer, which upgrades it with the server's timestamp.
  */
-export function selectEchoedOptimisticItemIds(
-  optimisticItems: OptimisticItem[],
+function countPromptEchoes(
   events: AcpMessage[],
   firstUnseenEntryIndex: number,
-): string[] {
+): Map<string, number> {
   const echoCounts = new Map<string, number>();
   for (const event of events) {
     const msg = event.message;
@@ -524,6 +523,13 @@ export function selectEchoedOptimisticItemIds(
     }).text.trim();
     echoCounts.set(text, (echoCounts.get(text) ?? 0) + 1);
   }
+  return echoCounts;
+}
+
+function selectItemsMatchingEchoes(
+  optimisticItems: OptimisticItem[],
+  echoCounts: Map<string, number>,
+): string[] {
   if (echoCounts.size === 0) return [];
 
   const echoed: string[] = [];
@@ -536,6 +542,34 @@ export function selectEchoedOptimisticItemIds(
     echoed.push(item.id);
   }
   return echoed;
+}
+
+export function selectEchoedOptimisticItemIds(
+  optimisticItems: OptimisticItem[],
+  events: AcpMessage[],
+  firstUnseenEntryIndex: number,
+): string[] {
+  return selectItemsMatchingEchoes(
+    optimisticItems,
+    countPromptEchoes(events, firstUnseenEntryIndex),
+  );
+}
+
+export function selectEchoedOptimisticItemIdsAfterRebuild(
+  optimisticItems: OptimisticItem[],
+  events: AcpMessage[],
+  committedEvents: AcpMessage[],
+): string[] {
+  const echoCounts = countPromptEchoes(events, 0);
+  for (const [text, committed] of countPromptEchoes(committedEvents, 0)) {
+    const remaining = (echoCounts.get(text) ?? 0) - committed;
+    if (remaining > 0) {
+      echoCounts.set(text, remaining);
+    } else {
+      echoCounts.delete(text);
+    }
+  }
+  return selectItemsMatchingEchoes(optimisticItems, echoCounts);
 }
 
 export function selectUnseededPendingFollowups(
