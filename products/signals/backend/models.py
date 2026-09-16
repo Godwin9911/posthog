@@ -1211,6 +1211,11 @@ class SignalReportArtefact(UUIDModel):
             models.Index(fields=["channel"], name="signals_sig_channel_idx"),
             models.Index(fields=["pull_request", "report"], name="signals_artefact_pr_report_idx"),
             models.Index(fields=["claim"], name="signals_artefact_claim_idx"),
+            models.Index(
+                fields=["id"],
+                condition=models.Q(type="implementation_replacement"),
+                name="signals_replacement_sweep_idx",
+            ),
         ]
 
     @classmethod
