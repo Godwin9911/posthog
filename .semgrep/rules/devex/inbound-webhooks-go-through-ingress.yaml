@@ -122,4 +122,3 @@ rules:
               - /products/conversations/backend/support_slack.py
               - /products/legal_documents/backend/logic/pandadoc.py
               - /products/user_interviews/backend/presentation/webhooks.py
-              - /products/workflows/backend/api/ses_events_webhook.py
