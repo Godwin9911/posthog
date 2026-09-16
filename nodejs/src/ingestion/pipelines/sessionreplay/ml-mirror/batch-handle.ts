@@ -7,7 +7,7 @@ import { SessionBatchRecorder } from '~/ingestion/pipelines/sessionreplay/sessio
 import { SessionKey } from '~/ingestion/pipelines/sessionreplay/shared/types'
 
 import { MlKeyBatchController } from './keys/batch-controller'
-import { MlKeyBatch } from './keys/key-store'
+import { MlKeyBatch, MlSessionKeys } from './keys/key-store'
 import { MlMirrorMetrics } from './metrics'
 
 export interface MlDeferrableInput {
@@ -16,6 +16,7 @@ export interface MlDeferrableInput {
     headers: { session_id: string }
     sessionKey: SessionKey
     sessionBatchRecorder: SessionBatchRecorder
+    mlKeys?: MlSessionKeys
 }
 
 type SideEffectSink = (promises: Promise<unknown>[]) => Promise<void>
@@ -45,7 +46,9 @@ export class MlBatchHandle {
             if (key.sessionState === 'deleted') {
                 return undefined
             }
-            const result = await action({ ...input, sessionKey: key, sessionBatchRecorder: recorder })
+            // The keys are the ones the commit settled on, which differ from the prepared ones when another writer stored the session first.
+            const mlKeys = this.keys?.get(input.team.teamId, input.headers.session_id)
+            const result = await action({ ...input, sessionKey: key, sessionBatchRecorder: recorder, mlKeys })
             if (result.type !== PipelineResultType.OK) {
                 return undefined
             }

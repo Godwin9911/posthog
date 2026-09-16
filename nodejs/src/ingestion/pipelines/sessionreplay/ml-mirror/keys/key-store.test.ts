@@ -411,6 +411,42 @@ describe('ML session key batches', () => {
         expect(scheduler.promises.size).toBe(0)
     })
 
+    it('hands deferred steps the keys the commit settled on, not the ones prepared', async () => {
+        const competitor = new MlSessionKeyStore(
+            new MlKeyDynamoDB(boundary as unknown as DynamoDBClient, table),
+            encryption
+        )
+        const identity = { ...session, sessionId: '01a0a4f0-3200-7000-8000-000000000004' }
+        const controller = new MlKeyBatchController(store, encryption)
+        const handle = new MlBatchHandle(controller)
+        handle.keys = await controller.prepare([identity])
+        const prepared = handle.keys.get(identity.teamId, identity.sessionId)!
+        const winner = await competitor.prepare([identity])
+        await winner.commit()
+        const seen: Buffer[] = []
+        await handle.defer(
+            {
+                message: {} as Message,
+                team: { teamId: identity.teamId },
+                headers: { session_id: identity.sessionId },
+                sessionKey: await controller.getKey(identity.sessionId, identity.teamId),
+                sessionBatchRecorder: recorder,
+                mlKeys: prepared,
+            },
+            (value) => {
+                seen.push(value.mlKeys!.session.wrapped, value.sessionKey.encryptedKey)
+                return Promise.resolve(ok(value))
+            }
+        )
+        jest.useFakeTimers()
+        const committing = handle.commit(recorder)
+        await jest.runAllTimersAsync()
+        await committing
+        const stored = winner.get(identity.teamId, identity.sessionId)!.session.wrapped
+        expect(seen).toEqual([stored, stored])
+        expect(stored).not.toEqual(prepared.session.wrapped)
+    })
+
     it('records into the recorder handed to the commit, not the one the message was fed with', async () => {
         const identity = { ...session, sessionId: '01a0a4f0-3200-7000-8000-000000000003' }
         const controller = new MlKeyBatchController(store, encryption)
