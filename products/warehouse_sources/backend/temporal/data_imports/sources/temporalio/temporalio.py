@@ -15,7 +15,7 @@ from temporalio.service import RPCError, RPCStatusCode
 from posthog.dataclasses import frozen
 from posthog.temporal.common.client import connect
 
-from products.warehouse_sources.backend.temporal.data_imports.sources.common.mixins import check_connect_host
+from products.warehouse_sources.backend.temporal.data_imports.sources.common.mixins import pinned_connect_host
 from products.warehouse_sources.backend.temporal.data_imports.sources.common.resumable import ResumableSourceManager
 from products.warehouse_sources.backend.temporal.data_imports.sources.common.typings import SourceResponse
 from products.warehouse_sources.backend.temporal.data_imports.sources.generated_configs.temporalio import (
@@ -266,10 +266,16 @@ class FakeSettings:
 
 async def _get_temporal_client(config: TemporalIOSourceConfig, team_id: int | None) -> Client:
     # The Temporal core dials `host:port` over gRPC from Rust, which reads no proxy environment,
-    # so the egress proxy is not in this path and the host check has to happen here.
-    # The check resolves the host with a blocking, unbounded lookup, so it runs on a worker
-    # thread rather than on the event loop this client shares with the rest of the extraction.
-    await asyncio.to_thread(check_connect_host, config.host, team_id)
+    # so the egress proxy is not in this path and the check has to happen here. Dial the address
+    # the check approved: handing the core the hostname would resolve it a second time, and that
+    # is the lookup a short-TTL record answers with a private address.
+    #
+    # The lookup is blocking and unbounded, so it runs on a worker thread rather than on the event
+    # loop this client shares with the rest of the extraction.
+    dial_host = await asyncio.to_thread(pinned_connect_host, config.host, team_id)
+    # The certificate is issued for the configured name, so that name stays the TLS identity
+    # whenever the dial address differs from it.
+    tls_domain = config.host if dial_host != config.host else None
 
     if config.fallback_decryption_keys:
         fallback_keys = [k.strip() for k in config.fallback_decryption_keys.split(",") if k.strip()]
@@ -277,8 +283,9 @@ async def _get_temporal_client(config: TemporalIOSourceConfig, team_id: int | No
         fallback_keys = []
 
     return await connect(
-        host=config.host,
+        host=dial_host,
         port=config.port,
+        tls_domain=tls_domain,
         namespace=config.namespace,
         client_cert=config.client_certificate,
         client_key=config.client_private_key,

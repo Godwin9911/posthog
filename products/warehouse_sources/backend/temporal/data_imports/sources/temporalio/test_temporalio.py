@@ -91,7 +91,10 @@ class TestTemporalIOClient:
 
         mock_connect.assert_not_called()
 
-    async def test_a_public_host_is_dialled(self):
+    async def test_the_validated_address_is_dialled_and_the_hostname_carries_tls(self):
+        # The hostname would be resolved a second time by the client, which is the lookup a
+        # short-TTL record answers differently. Dial the address that passed the check instead,
+        # and keep the hostname for the certificate.
         with (
             override_settings(CLOUD_DEPLOYMENT="US"),
             patch(f"{_MIXINS_MODULE}.socket.getaddrinfo", return_value=_resolves_to("93.184.216.34")),
@@ -100,7 +103,20 @@ class TestTemporalIOClient:
         ):
             await _get_temporal_client(_config(), team_id=999)
 
-        assert mock_connect.call_args.args[0] == "temporal.example.com:7233"
+        assert mock_connect.call_args.args[0] == "93.184.216.34:7233"
+        assert mock_connect.call_args.kwargs["tls"].domain == "temporal.example.com"
+
+    async def test_a_host_that_is_already_an_address_carries_no_tls_domain(self):
+        # rustls reads the domain as a DNS name, so an address there fails every handshake.
+        with (
+            override_settings(CLOUD_DEPLOYMENT="US"),
+            patch(f"{_MIXINS_MODULE}.logger"),
+            patch.object(Client, "connect", new=AsyncMock(return_value=MagicMock())) as mock_connect,
+        ):
+            await _get_temporal_client(_config(host="93.184.216.34"), team_id=999)
+
+        assert mock_connect.call_args.args[0] == "93.184.216.34:7233"
+        assert mock_connect.call_args.kwargs["tls"].domain is None
 
     @pytest.mark.parametrize("port", ["7233@169.254.169.254:80", "not-a-port"])
     def test_a_port_that_is_not_a_number_is_rejected(self, port):

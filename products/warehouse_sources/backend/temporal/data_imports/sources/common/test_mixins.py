@@ -25,6 +25,7 @@ from products.warehouse_sources.backend.temporal.data_imports.sources.common.mix
     TemporaryHostResolutionError,
     ValidateDatabaseHostMixin,
     _is_host_safe,
+    bracket_host,
     check_resolved_addresses,
     make_ssh_tunnel_factory,
     open_ssh_tunnel,
@@ -278,6 +279,21 @@ class TestIsHostSafe(SimpleTestCase):
             assert kwargs["stage"] == "resolved_ip"
             assert kwargs["resolved_ips"] == ["52.1.2.3"]
             mock_logger.warning.assert_not_called()
+
+
+class TestBracketHost(SimpleTestCase):
+    # A client that builds `host:port` needs the brackets back on an IPv6 address the policy
+    # returned bare, and must not add them to anything else.
+    @parameterized.expand(
+        [
+            ("ipv6", "2606:4700:4700::1111", "[2606:4700:4700::1111]"),
+            ("ipv6_already_bracketed", "[2606:4700:4700::1111]", "[2606:4700:4700::1111]"),
+            ("ipv4", "93.184.216.34", "93.184.216.34"),
+            ("hostname", "db.example.com", "db.example.com"),
+        ]
+    )
+    def test_brackets_only_an_ipv6_address(self, _name: str, host: str, expected: str):
+        assert bracket_host(host) == expected
 
 
 class TestValidateDatabaseHostMixin(SimpleTestCase):

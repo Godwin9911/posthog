@@ -290,6 +290,20 @@ def unbracket_host(host: str) -> str:
     return inner[1:-1]
 
 
+def bracket_host(host: str) -> str:
+    """Return an IPv6 address in the form a `host:port` string needs.
+
+    The inverse of `unbracket_host`: the policy answers with a bare address, and a client that
+    joins host and port with a colon cannot tell that address from its own port without the
+    brackets. A hostname or an IPv4 address comes back unchanged.
+    """
+    try:
+        parsed = ipaddress.ip_address(host.strip())
+    except ValueError:
+        return host
+    return f"[{host.strip()}]" if parsed.version == 6 else host
+
+
 _HOST_LABEL = re.compile(r"^(?!-)[a-z0-9_-]{1,63}(?<!-)\Z")
 
 
@@ -512,6 +526,23 @@ def check_connect_host(host: str, team_id: int | None) -> None:
     resolution = resolve_safe_host(host, team_id)
     if resolution.connect_host is None:
         raise HostNotAllowedError(f"{DATABASE_HOST_NOT_ALLOWED_ERROR}: {resolution.error or _INTERNAL_IP_ERROR}")
+
+
+def pinned_connect_host(host: str, team_id: int | None) -> str:
+    """Resolve `host` and return the address to dial, ready for a `host:port` join.
+
+    The pinning counterpart to `check_connect_host`, for a client that can dial an address while
+    carrying the hostname separately for TLS. Checking alone leaves the client to resolve the name
+    a second time, and a record with a short TTL can answer public for the check and private for
+    that second lookup. Dialling what the check approved closes it.
+
+    The host comes back unchanged where the policy does not apply, so the caller needs no TLS
+    name of its own in that case.
+    """
+    resolution = resolve_safe_host(host, team_id)
+    if resolution.connect_host is None:
+        raise HostNotAllowedError(f"{DATABASE_HOST_NOT_ALLOWED_ERROR}: {resolution.error or _INTERNAL_IP_ERROR}")
+    return bracket_host(resolution.connect_host)
 
 
 def _check_direct_host(config, team_id: int | None) -> None:
