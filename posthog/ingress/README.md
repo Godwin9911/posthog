@@ -50,6 +50,8 @@ An HMAC over raw bytes proves only the signature, so its `facts` are empty and `
 | `slack`      | `/api/conversations/v1/slack/events`                    | `supporthog` | `conversations_slack`                                                                                                                       | `products/conversations/backend/webhook_consumers.py`                   |
 | `pandadoc`   | `/api/legal_documents/pandadoc`                         | `default`    | `legal_documents_signatures`                                                                                                                | `products/legal_documents/backend/webhook_consumers.py`                 |
 | `vapi`       | `/api/user_interviews/vapi_webhook/`                    | `default`    | `user_interviews_vapi`                                                                                                                      | `products/user_interviews/backend/webhook_consumers.py`                 |
+| `mailgun`    | `/api/conversations/v1/email/inbound`                   | `inbound`    | none yet, the endpoint still runs its own verifier                                                                                          | `products/conversations/backend/api/email_events.py`                    |
+| `mailgun`    | `/api/conversations/v1/email/outbound`                  | `outbound`   | none yet, the endpoint still runs its own verifier                                                                                          | `products/conversations/backend/api/email_events.py`                    |
 | `sns`        | `/webhooks/workflows/ses-events`                        | `default`    | `workflows_ses_events`                                                                                                                      | `products/workflows/backend/webhook_consumers.py`                       |
 | `customerio` | `/api/projects/<team_id>/messaging/customerio/webhook/` | none         | none, it is the DRF adapter path                                                                                                            | `products/messaging/backend/api/customerio_webhook.py`                  |
 
@@ -212,6 +214,7 @@ Last, write `<provider>/README.md` with the fixed sections every provider README
 Two shapes that already exist and are worth copying rather than re-deriving:
 
 - **Several apps on one provider.** One incarnation can serve several apps, each with its own secret getter, its own subscribed event types, and its own consumer set. Consumers register against the app name. `github/` is the case.
+- **A provider that signs the form rather than the body.** The incarnation overrides both `verify()` and `parse()` to read `request.POST`, assembles the signed input from the form fields, and hands it to `HmacSha256` as if it came from headers. `mailgun/` is the case.
 - **The DRF adapter path.** An endpoint that genuinely needs DRF's team scoping keeps its view, and the incarnation contributes a scheme only, declaring no spec, because nothing dispatches there. `customerio/` is the case. The view verifies through `posthog.auth.WebhookSignatureAuthentication`, which still carries its own HMAC-SHA256 computation rather than the scheme here; moving that class onto the schemes is its own PR.
 
 ## Dedup
