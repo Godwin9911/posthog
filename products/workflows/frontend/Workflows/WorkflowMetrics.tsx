@@ -13,6 +13,7 @@ import { appMetricsLogic } from 'lib/components/AppMetrics/appMetricsLogic'
 import { AppMetricsTrends } from 'lib/components/AppMetrics/AppMetricsTrends'
 import { TZLabel } from 'lib/components/TZLabel'
 import { dayjs } from 'lib/dayjs'
+import { LogsViewer } from 'scenes/hog-functions/logs/LogsViewer'
 import { urls } from 'scenes/urls'
 
 import { batchWorkflowJobsLogic } from './batchWorkflowJobsLogic'
@@ -362,6 +363,38 @@ function BatchJobMetrics({ job }: { job: HogFlowBatchJob }): JSX.Element {
                     />
                 </>
             )}
+
+            <BatchJobLogs job={job} dateFrom={jobStart.toISOString()} dateTo={jobEnd.toISOString()} />
+        </div>
+    )
+}
+
+/**
+ * A batch run's logs key on the run rather than the workflow, so no other view returns them. That
+ * hides the run-level facts a person opens this panel for: that the audience was cut at the batch
+ * limit, or that the run failed before it finished enrolling.
+ */
+function BatchJobLogs({
+    job,
+    dateFrom,
+    dateTo,
+}: {
+    job: HogFlowBatchJob
+    dateFrom: string
+    dateTo: string
+}): JSX.Element {
+    return (
+        <div className="flex flex-col gap-2" data-attr="workflow-batch-job-logs">
+            <h4 className="mb-0">Run logs</h4>
+            <LogsViewer
+                logicKey={`hog-flow-batch-logs-${job.id}`}
+                sourceType="hog_flow"
+                sourceId={job.id}
+                instanceLabel="run"
+                groupByInstanceId={false}
+                hideDateFilter
+                defaultFilters={{ dateFrom, dateTo }}
+            />
         </div>
     )
 }
