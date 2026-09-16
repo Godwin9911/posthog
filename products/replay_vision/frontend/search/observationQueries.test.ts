@@ -50,6 +50,6 @@ describe('observationQueries', () => {
         expect(consumeSimilarSearchIntent('another-observation')).toBeNull()
         markSimilarSearchIntent(source)
         expect(consumeSimilarSearchIntent('obs-1')).toBe('stuck at checkout')
-        expect(consumeSimilarSearchIntent('obs-1')).toBeNull()
+        expect(consumeSimilarSearchIntent('obs-1')).toBe('stuck at checkout')
     })
 })

@@ -110,11 +110,12 @@ export const replayScannerSceneLogic = kea<replayScannerSceneLogicType>([
 
     urlToAction(({ actions, values }) => ({
         [urls.replayVision(':id')]: ({ id }, searchParams) => {
-            // A scanner has no Search tab, so an old link to one opens the hub search carrying its query.
+            // Old per-scanner search links open the hub search.
             if (searchParams.tab === ReplayScannerTab.Search) {
                 const q = searchParams.q != null ? String(searchParams.q) : ''
                 router.actions.replace(urls.replayVision(), {
                     tab: ReplayScannerTab.Search,
+                    ...(id && id !== 'new' ? { scanner: id } : {}),
                     ...(q ? { q } : {}),
                 })
                 return

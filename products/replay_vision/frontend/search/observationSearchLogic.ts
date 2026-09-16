@@ -175,7 +175,6 @@ export const observationSearchLogic = kea<observationSearchLogicType>([
                 clearSearch: () => '',
             },
         ],
-        // Kept in the URL, not storage, so links and "find similar" start from the scope they name.
         scannerId: [
             null as string | null,
             {
@@ -368,7 +367,12 @@ export const observationSearchLogic = kea<observationSearchLogicType>([
             q: string | undefined
         ): [string, Record<string, unknown>, Record<string, unknown>, { replace: boolean }] => [
             router.values.location.pathname,
-            { ...router.values.searchParams, q, scanner: values.scannerId ?? undefined },
+            {
+                ...router.values.searchParams,
+                q,
+                scanner: values.scannerId ?? undefined,
+                similar: values.sourceObservationId ?? undefined,
+            },
             router.values.hashParams,
             { replace: true },
         ]
@@ -391,17 +395,28 @@ export const observationSearchLogic = kea<observationSearchLogicType>([
                     actions.setScannerId(scanner)
                 }
                 const similar = typeof searchParams.similar === 'string' ? searchParams.similar : ''
-                const similarQuery = consumeSimilarSearchIntent(similar)
-                if (similarQuery) {
-                    actions.searchSimilar(similarQuery, similar)
+                if (similar) {
+                    if (similar === values.sourceObservationId) {
+                        return
+                    }
+                    const similarQuery = consumeSimilarSearchIntent(similar)
+                    if (similarQuery) {
+                        actions.searchSimilar(similarQuery, similar)
+                    } else {
+                        // A pasted link has no stored query, so drop the param instead of looking filtered.
+                        router.actions.replace(
+                            router.values.location.pathname,
+                            { ...searchParams, similar: undefined },
+                            router.values.hashParams
+                        )
+                    }
                     return
                 }
                 // kea-router decodes ?q=true to a boolean, so stringify instead of dropping it.
                 const raw = searchParams.q
                 const q = typeof raw === 'string' ? raw : raw != null ? String(raw) : ''
-                // Run a deep-linked query once. Comparing against the trimmed input blocks the actionToUrl
-                // echo of an interactive search, and stops a failed query (which never reaches searchedQuery)
-                // from re-firing on every unrelated URL change while it still fills the input.
+                // Run a deep-linked query once. The trimmed-input check blocks the actionToUrl echo and keeps
+                // a failed query from re-firing on unrelated URL changes.
                 if (q && q !== values.searchedQuery && q !== values.query.trim()) {
                     actions.setQuery(q)
                     actions.search()

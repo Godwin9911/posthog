@@ -4,6 +4,8 @@ import { teamLogic } from 'scenes/teamLogic'
 import { urls } from 'scenes/urls'
 import { userLogic } from 'scenes/userLogic'
 
+import { Breadcrumb } from '~/types'
+
 import type { ReplayObservationApi } from '../generated/api.schemas'
 import { ReplayScannerTab } from '../replay_scanners/replayScannerSceneLogic'
 import { parseCitedSegments, stripCitations } from '../utils/citations'
@@ -57,16 +59,31 @@ export function searchTabUrl(params: Record<string, string> = {}): string {
     return combineUrl(urls.replayVision(), { tab: ReplayScannerTab.Search, ...params }).url
 }
 
+export function searchReturnParams(
+    searchedQuery: string,
+    scannerId: string | null,
+    sourceObservationId: string | null
+): Record<string, string> {
+    return {
+        tab: ReplayScannerTab.Search,
+        ...(scannerId ? { scanner: scannerId } : {}),
+        ...(sourceObservationId ? { similar: sourceObservationId } : searchedQuery ? { q: searchedQuery } : {}),
+    }
+}
+
+export function searchBreadcrumb(returnParams: Record<string, string>): Breadcrumb {
+    const { tab: _tab, ...params } = returnParams
+    return { key: 'search', name: 'Search', path: searchTabUrl(params) }
+}
+
 const SIMILAR_SEARCH_INTENT_KEY = 'replay-vision.similar-search-intent'
 
 function intentOwner(): string {
     return `${userLogic.findMounted()?.values.user?.uuid ?? ''}:${teamLogic.findMounted()?.values.currentTeamId ?? ''}`
 }
 
-/** "Find similar" hands its query over through sessionStorage, not the URL: it is prose about a recording and
- * can carry customer names or emails, which must stay out of $current_url, our own replay and browser history
- * (same channel as replay_scanners/goalDraftIntent.ts). The link names the source observation, and storage
- * outlives a logout, so only the navigation that armed a hand-off can spend it. */
+/** The query travels through sessionStorage, not the URL: it is observation prose that can carry customer
+ * names, so it must stay out of $current_url and browser history. It is bound to the user who armed it. */
 export function similarSearchUrl(observation: ReplayObservationApi): string | null {
     return similarSearchQuery(observation) ? searchTabUrl({ similar: observation.id }) : null
 }
@@ -89,7 +106,6 @@ export function markSimilarSearchIntent(observation: ReplayObservationApi): void
 export function consumeSimilarSearchIntent(sourceObservationId: string): string | null {
     try {
         const raw = sessionStorage.getItem(SIMILAR_SEARCH_INTENT_KEY)
-        sessionStorage.removeItem(SIMILAR_SEARCH_INTENT_KEY)
         const parsed = raw ? JSON.parse(raw) : null
         return parsed?.sourceObservationId === sourceObservationId &&
             parsed.owner === intentOwner() &&

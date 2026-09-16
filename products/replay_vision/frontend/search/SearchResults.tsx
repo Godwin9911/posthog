@@ -19,11 +19,11 @@ import type { ObservationSearchResultApi, ReplayObservationApi } from '../genera
 import { observationDetailUrl } from '../observations/replayObservationLogic'
 import { parseCitedSegments } from '../utils/citations'
 import { hasScannerPage, scannerLabel } from '../utils/observation'
-import { firstCitedTimestampMs } from './observationQueries'
+import { firstCitedTimestampMs, searchReturnParams } from './observationQueries'
 import { type ObservationSearchLogicProps, SEARCH_PAGE_SIZE, observationSearchLogic } from './observationSearchLogic'
 import { snippetSegments } from './snippetSegments'
 
-// The global SessionPlayerModal opens from the hash and seeks from `t`, so the recording plays over the results.
+// The global SessionPlayerModal opens from the hash and seeks from `t`.
 function watchMomentUrl(
     observation: ReplayObservationApi,
     citedMs: number | null,
@@ -31,7 +31,7 @@ function watchMomentUrl(
 ): string {
     return combineUrl(
         location.pathname,
-        { ...searchParams, t: citedMs ? Math.floor(citedMs / 1000) : undefined },
+        { ...searchParams, t: citedMs !== null ? Math.floor(citedMs / 1000) : undefined },
         { ...hashParams, sessionRecordingId: observation.session_id }
     ).url
 }
@@ -39,9 +39,11 @@ function watchMomentUrl(
 function SearchResultRow({
     result,
     searchedQuery,
+    returnParams,
 }: {
     result: ObservationSearchResultApi
     searchedQuery: string
+    returnParams: Record<string, string>
 }): JSX.Element {
     const routerValues = useValues(router)
     const observation = result.observation
@@ -104,7 +106,7 @@ function SearchResultRow({
             <ObservationResultSummary observation={observation} />
             <div className="flex items-center gap-3 text-xs">
                 <Link
-                    to={observationDetailUrl(observation.id, {})}
+                    to={observationDetailUrl(observation.id, returnParams)}
                     className="inline-flex items-center gap-1"
                     data-attr="vision-search-result-detail"
                 >
@@ -144,6 +146,8 @@ export function SearchResults(logicProps: ObservationSearchLogicProps): JSX.Elem
         results,
         searching,
         searchedQuery,
+        scannerId,
+        sourceObservationId,
         truncated,
         topMatchDistanceCutoff,
         page,
@@ -157,6 +161,7 @@ export function SearchResults(logicProps: ObservationSearchLogicProps): JSX.Elem
     if (!results || results.length === 0) {
         return null
     }
+    const returnParams = searchReturnParams(searchedQuery ?? '', scannerId, sourceObservationId)
     const tierOf = (result: ObservationSearchResultApi): Tier | null =>
         topMatchDistanceCutoff === null ? null : result.distance <= topMatchDistanceCutoff ? 'top' : 'other'
     return (
@@ -172,7 +177,11 @@ export function SearchResults(logicProps: ObservationSearchLogicProps): JSX.Elem
                     return (
                         <Fragment key={result.observation.id}>
                             {startsTier && <TierHeading tier={tier} />}
-                            <SearchResultRow result={result} searchedQuery={searchedQuery ?? ''} />
+                            <SearchResultRow
+                                result={result}
+                                searchedQuery={searchedQuery ?? ''}
+                                returnParams={returnParams}
+                            />
                         </Fragment>
                     )
                 })}

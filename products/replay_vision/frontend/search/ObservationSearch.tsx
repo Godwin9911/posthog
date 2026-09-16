@@ -4,7 +4,7 @@ import { combineUrl } from 'kea-router'
 import { useState } from 'react'
 
 import { IconPlusSmall, IconSearch, IconX } from '@posthog/icons'
-import { LemonButton, Popover, Spinner } from '@posthog/lemon-ui'
+import { LemonButton, LemonInput, Popover, Spinner } from '@posthog/lemon-ui'
 
 import { aiConsentLogic } from 'scenes/settings/organization/aiConsentLogic'
 import { teamLogic } from 'scenes/teamLogic'
@@ -63,7 +63,11 @@ export function ObservationSearch({ className }: { className?: string }): JSX.El
     const typed = query.trim().toLowerCase()
     const matchingRecents = recentQueries.filter((recent) => recent !== query && recent.toLowerCase().includes(typed))
     const showRecents = recentsOpen && dataProcessingAccepted && matchingRecents.length > 0
+    const consentReason = dataProcessingAccepted ? undefined : 'AI data processing is turned off for your organization'
     const runQuery = (value: string): void => {
+        if (searching) {
+            return
+        }
         setRecentsOpen(false)
         setQuery(value)
         search()
@@ -103,66 +107,68 @@ export function ObservationSearch({ className }: { className?: string }): JSX.El
                                 {matchingRecents.map((recent) => (
                                     <li key={recent}>
                                         {/* Mouse down would blur the input and close the list first. */}
-                                        <button
-                                            type="button"
-                                            className="w-full text-left px-3 py-1.5 text-sm truncate hover:bg-fill-button-tertiary-hover"
+                                        <LemonButton
+                                            fullWidth
+                                            size="small"
                                             onMouseDown={(event) => event.preventDefault()}
                                             onClick={() => runQuery(recent)}
                                             data-attr="vision-search-recent"
                                         >
-                                            {recent}
-                                        </button>
+                                            <span className="truncate">{recent}</span>
+                                        </LemonButton>
                                     </li>
                                 ))}
                             </ul>
                         }
                     >
-                        <div className="input-like border-secondary flex items-center gap-2 relative w-full bg-fill-input rounded-lg py-1 pl-1 pr-1">
-                            <ScannerScopeSelect scanners={scanners} value={scannerId} onChange={setScannerId} />
-                            <input
-                                type="text"
-                                value={query}
-                                onChange={(event) => {
-                                    setQuery(event.target.value)
-                                    setRecentsOpen(true)
-                                }}
-                                onFocus={() => setRecentsOpen(true)}
-                                onBlur={() => setRecentsOpen(false)}
-                                onKeyDown={onKeyDown}
-                                placeholder="Describe what to look for"
-                                aria-label="Search observations"
-                                disabled={!dataProcessingAccepted}
-                                autoComplete="off"
-                                autoFocus
-                                className="w-full py-1 text-sm bg-transparent border-none focus:outline-none"
-                                data-attr="vision-search-query"
-                            />
-                            {query && (
-                                <LemonButton
-                                    size="xsmall"
-                                    icon={<IconX />}
-                                    onClick={clearSearch}
-                                    tooltip="Clear"
-                                    data-attr="vision-search-clear"
-                                />
-                            )}
-                            <LemonButton
-                                type="primary"
-                                size="small"
-                                icon={<IconSearch />}
-                                onClick={search}
-                                loading={searching}
-                                disabledReason={
-                                    !dataProcessingAccepted
-                                        ? 'AI data processing is turned off for your organization'
-                                        : !query.trim()
-                                          ? 'Describe what to look for first'
-                                          : undefined
-                                }
-                                tooltip="Search"
-                                data-attr="vision-search-submit"
-                            />
-                        </div>
+                        <LemonInput
+                            fullWidth
+                            value={query}
+                            onChange={(value) => {
+                                setQuery(value)
+                                setRecentsOpen(true)
+                            }}
+                            onFocus={() => setRecentsOpen(true)}
+                            onBlur={() => setRecentsOpen(false)}
+                            onKeyDown={onKeyDown}
+                            placeholder="Describe what to look for"
+                            disabledReason={consentReason}
+                            autoComplete="off"
+                            autoFocus
+                            data-attr="vision-search-query"
+                            prefix={
+                                // The input chrome focuses the field on click, which opens the recents over the picker.
+                                <span onClick={(event) => event.stopPropagation()}>
+                                    <ScannerScopeSelect scanners={scanners} value={scannerId} onChange={setScannerId} />
+                                </span>
+                            }
+                            suffix={
+                                <>
+                                    {query && (
+                                        <LemonButton
+                                            size="xsmall"
+                                            icon={<IconX />}
+                                            onClick={clearSearch}
+                                            tooltip="Clear"
+                                            data-attr="vision-search-clear"
+                                        />
+                                    )}
+                                    <LemonButton
+                                        type="primary"
+                                        size="small"
+                                        icon={<IconSearch />}
+                                        onClick={search}
+                                        loading={searching}
+                                        disabledReason={
+                                            consentReason ??
+                                            (!query.trim() ? 'Describe what to look for first' : undefined)
+                                        }
+                                        tooltip="Search"
+                                        data-attr="vision-search-submit"
+                                    />
+                                </>
+                            }
+                        />
                     </Popover>
                     {idle && (
                         <div className="text-xs text-secondary">
@@ -187,6 +193,7 @@ export function ObservationSearch({ className }: { className?: string }): JSX.El
                                         type="secondary"
                                         size="xsmall"
                                         className="max-w-full"
+                                        disabledReason={consentReason}
                                         onClick={() => runQuery(suggestion)}
                                         data-attr="vision-search-example"
                                     >
