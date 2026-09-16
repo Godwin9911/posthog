@@ -1532,6 +1532,8 @@ export interface SharingConfigurationSettings {
     hideExtraDetails?: boolean
     // Recordings
     showInspector?: boolean
+    // Desktop canvases: whether anyone with the link may copy the canvas into their own project
+    allowForking?: boolean
 }
 
 export interface DataVisualizationNode extends Node<never> {
