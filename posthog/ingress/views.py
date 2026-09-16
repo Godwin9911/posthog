@@ -81,6 +81,13 @@ def build_webhook_view(provider: WebhookProvider) -> Callable[[HttpRequest], Htt
             logger.error("ingress_webhook_not_configured", provider=provider.provider, app=provider.app)
             observe_delivery(provider=provider.provider, app=provider.app, outcome="not_configured")
             return HttpResponse("Webhook not configured", status=provider.unconfigured_status)
+        if verification.outcome is VerificationOutcome.UNAVAILABLE:
+            # The check never ran, so nothing here is the caller's fault. 503 asks any sender that
+            # retries a server error to send the delivery again, which the invalid-signature status
+            # would not: that one reads as a verdict on the signature.
+            logger.warning("ingress_verify_unavailable", provider=provider.provider, app=provider.app)
+            observe_delivery(provider=provider.provider, app=provider.app, outcome="verify_unavailable")
+            return HttpResponse("Verification unavailable", status=503)
         if verification.outcome is not VerificationOutcome.VERIFIED:
             observe_delivery(provider=provider.provider, app=provider.app, outcome="invalid_signature")
             return HttpResponse("Invalid signature", status=provider.invalid_signature_status)

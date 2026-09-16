@@ -57,6 +57,12 @@ class _RedeliveringGitHubProvider(GitHubProvider):
     retry_status = 502
 
 
+class _UnavailableVerifyGitHubProvider(GitHubProvider):
+    # Stands in for a scheme whose network step failed, which is the JWKS fetch on `BearerJwt`.
+    def verify(self, request: HttpRequest) -> Verification:
+        return Verification(outcome=VerificationOutcome.UNAVAILABLE)
+
+
 class _ClaimsGitHubProvider(GitHubProvider):
     # Stands in for a scheme that checks a signed token, which names the sender before the body
     # is parsed. The claims land in the delivery's context so the test can read them back.
@@ -181,6 +187,18 @@ class TestWebhookView(SimpleTestCase):
             response = self._github_view()(request)
 
         self.assertEqual(response.status_code, 403)
+        self.dispatcher.dispatch.assert_not_called()
+
+    def test_a_verification_that_could_not_run_is_503_rather_than_the_invalid_signature_status(self) -> None:
+        body = json.dumps({"action": "opened"}).encode()
+        request = self._post(body, {"X-Hub-Signature-256": _github_signature(body), "X-GitHub-Event": "issues"})
+
+        with patch("posthog.ingress.views.observe_delivery") as observe:
+            response = build_webhook_view(_UnavailableVerifyGitHubProvider("posthog"))(request)
+
+        # 403 would tell a sender that retries server errors only to drop a valid delivery.
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual([call.kwargs["outcome"] for call in observe.call_args_list], ["verify_unavailable"])
         self.dispatcher.dispatch.assert_not_called()
 
     def test_an_unparseable_body_is_400_and_logs_what_the_decoder_said(self) -> None:
