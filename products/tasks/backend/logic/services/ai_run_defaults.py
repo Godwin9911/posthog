@@ -35,7 +35,7 @@ from posthog.models.team.extensions import get_or_create_team_extension
 from posthog.models.team.team import Team
 from posthog.models.user import User
 
-from products.tasks.backend.constants import ACP_REASONING_EFFORTS, PI_REASONING_EFFORTS
+from products.tasks.backend.constants import PI_THINKING_LEVELS, REASONING_EFFORTS
 from products.tasks.backend.feature_flags import (
     get_model_access_error,
     get_required_model_flag,
@@ -215,7 +215,7 @@ def _resolve_from_preferences(
     if runtime == PI:
         if not model:
             return None
-        if reasoning_effort not in PI_REASONING_EFFORTS:
+        if reasoning_effort not in PI_THINKING_LEVELS:
             reasoning_effort = None
         return ResolvedAIRunConfig(
             runtime=PI,
@@ -263,9 +263,9 @@ def validate_ai_run_preferences(
             raise ValidationError("model must be set to configure a Pi default.")
         if runtime_adapter is not None:
             raise ValidationError("runtime_adapter cannot be set with runtime 'pi' — Pi has no ACP adapter.")
-        if reasoning_effort is not None and reasoning_effort not in PI_REASONING_EFFORTS:
+        if reasoning_effort is not None and reasoning_effort not in PI_THINKING_LEVELS:
             raise ValidationError(
-                f"Unknown thinking level '{reasoning_effort}'. Valid: {', '.join(sorted(PI_REASONING_EFFORTS))}."
+                f"Unknown thinking level '{reasoning_effort}'. Valid: {', '.join(sorted(PI_THINKING_LEVELS))}."
             )
         return
 
@@ -277,7 +277,7 @@ def validate_ai_run_preferences(
     # The catalogue only judges an effort against a model, so an effort stored without a
     # pair — legal, and inherited by whatever model resolves later — still needs a check.
     if reasoning_effort is not None:
-        valid_efforts = set(ACP_REASONING_EFFORTS)
+        valid_efforts = set(REASONING_EFFORTS)
         if reasoning_effort not in valid_efforts:
             raise ValidationError(
                 f"Unknown reasoning_effort '{reasoning_effort}'. Valid: {', '.join(sorted(valid_efforts))}."
