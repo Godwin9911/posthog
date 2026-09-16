@@ -25,7 +25,7 @@ import {
 } from '../generated/api'
 import type { ObservationSearchResultApi } from '../generated/api.schemas'
 import { ReplayScannerTab } from '../replay_scanners/replayScannerSceneLogic'
-import { consumeSimilarSearchIntent } from './observationQueries'
+import { readSimilarSearchIntent } from './observationQueries'
 
 // The server's MAX_SEARCH_LIMIT. A larger value would 400.
 const SEARCH_RESULT_LIMIT = 50
@@ -179,7 +179,6 @@ export const observationSearchLogic = kea<observationSearchLogicType>([
             null as string | null,
             {
                 setScannerId: (_, { scannerId }) => scannerId,
-                searchSimilar: () => null,
             },
         ],
         sourceObservationId: [
@@ -399,7 +398,7 @@ export const observationSearchLogic = kea<observationSearchLogicType>([
                     if (similar === values.sourceObservationId) {
                         return
                     }
-                    const similarQuery = consumeSimilarSearchIntent(similar)
+                    const similarQuery = readSimilarSearchIntent(similar)
                     if (similarQuery) {
                         actions.searchSimilar(similarQuery, similar)
                     } else {

@@ -103,7 +103,7 @@ export function markSimilarSearchIntent(observation: ReplayObservationApi): void
     }
 }
 
-export function consumeSimilarSearchIntent(sourceObservationId: string): string | null {
+export function readSimilarSearchIntent(sourceObservationId: string): string | null {
     try {
         const raw = sessionStorage.getItem(SIMILAR_SEARCH_INTENT_KEY)
         const parsed = raw ? JSON.parse(raw) : null

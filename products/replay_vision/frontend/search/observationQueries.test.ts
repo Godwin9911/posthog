@@ -1,6 +1,6 @@
 import type { ReplayObservationApi } from '../generated/api.schemas'
 import {
-    consumeSimilarSearchIntent,
+    readSimilarSearchIntent,
     firstCitedTimestampMs,
     markSimilarSearchIntent,
     similarSearchQuery,
@@ -47,9 +47,9 @@ describe('observationQueries', () => {
         expect(similarSearchUrl(source)).toBe('/replay-vision?tab=search&similar=obs-1')
 
         markSimilarSearchIntent(source)
-        expect(consumeSimilarSearchIntent('another-observation')).toBeNull()
+        expect(readSimilarSearchIntent('another-observation')).toBeNull()
         markSimilarSearchIntent(source)
-        expect(consumeSimilarSearchIntent('obs-1')).toBe('stuck at checkout')
-        expect(consumeSimilarSearchIntent('obs-1')).toBe('stuck at checkout')
+        expect(readSimilarSearchIntent('obs-1')).toBe('stuck at checkout')
+        expect(readSimilarSearchIntent('obs-1')).toBe('stuck at checkout')
     })
 })

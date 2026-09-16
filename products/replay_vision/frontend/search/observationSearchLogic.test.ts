@@ -231,12 +231,19 @@ describe('observationSearchLogic', () => {
         } as unknown as ReplayObservationApi)
         const logic = observationSearchLogic({ teamId: 1, userId: 'user-1' })
         logic.mount()
-        router.actions.push(urls.replayVision(), { tab: 'search', similar: 'obs-0' })
+        router.actions.push(urls.replayVision(), { tab: 'search', similar: 'obs-0', scanner: 'scanner-2' })
         await expectLogic(logic).toFinishAllListeners()
 
         expect(logic.values.results?.map((r) => r.observation.id)).toEqual(['obs-1'])
         expect(router.values.searchParams.q).toBeUndefined()
         expect(logic.values.recentQueries).toEqual([])
+        expect(searchSpy).toHaveBeenCalledTimes(1)
+        expect(new URL(searchSpy.mock.calls[0][0].request.url).searchParams.get('scanner_id')).toBe('scanner-2')
+
+        router.actions.push(urls.replayVision(), { tab: 'search', similar: 'obs-9', scanner: 'scanner-2' })
+        await expectLogic(logic).toFinishAllListeners()
+        expect(router.values.searchParams.similar).toBeUndefined()
+        expect(searchSpy).toHaveBeenCalledTimes(1)
         logic.unmount()
     })
 
