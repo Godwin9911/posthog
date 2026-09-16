@@ -3051,6 +3051,7 @@ export const TasksRunsArtifactsReferencesCreateBody = /* @__PURE__ */ zod.object
                         'experiment',
                         'survey',
                         'ticket',
+                        'report',
                         'trace',
                         'eval',
                         'event',
@@ -3059,10 +3060,10 @@ export const TasksRunsArtifactsReferencesCreateBody = /* @__PURE__ */ zod.object
                         'person',
                     ])
                     .describe(
-                        '\* `insight` - insight\n\* `hogql` - hogql\n\* `dashboard` - dashboard\n\* `error` - error\n\* `replay` - replay\n\* `flag` - flag\n\* `experiment` - experiment\n\* `survey` - survey\n\* `ticket` - ticket\n\* `trace` - trace\n\* `eval` - eval\n\* `event` - event\n\* `cohort` - cohort\n\* `action` - action\n\* `person` - person'
+                        '\* `insight` - insight\n\* `hogql` - hogql\n\* `dashboard` - dashboard\n\* `error` - error\n\* `replay` - replay\n\* `flag` - flag\n\* `experiment` - experiment\n\* `survey` - survey\n\* `ticket` - ticket\n\* `report` - report\n\* `trace` - trace\n\* `eval` - eval\n\* `event` - event\n\* `cohort` - cohort\n\* `action` - action\n\* `person` - person'
                     )
                     .describe(
-                        'PostHog object kind used to resolve the reference.\n\n\* `insight` - insight\n\* `hogql` - hogql\n\* `dashboard` - dashboard\n\* `error` - error\n\* `replay` - replay\n\* `flag` - flag\n\* `experiment` - experiment\n\* `survey` - survey\n\* `ticket` - ticket\n\* `trace` - trace\n\* `eval` - eval\n\* `event` - event\n\* `cohort` - cohort\n\* `action` - action\n\* `person` - person'
+                        'PostHog object kind used to resolve the reference.\n\n\* `insight` - insight\n\* `hogql` - hogql\n\* `dashboard` - dashboard\n\* `error` - error\n\* `replay` - replay\n\* `flag` - flag\n\* `experiment` - experiment\n\* `survey` - survey\n\* `ticket` - ticket\n\* `report` - report\n\* `trace` - trace\n\* `eval` - eval\n\* `event` - event\n\* `cohort` - cohort\n\* `action` - action\n\* `person` - person'
                     ),
                 object_id: zod
                     .string()
