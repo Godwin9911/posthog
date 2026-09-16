@@ -31,6 +31,7 @@ from products.signals.backend.billing import (
 )
 from products.signals.backend.free_trial import capture_signal_report_free_trial_paused, self_driving_free_trial_enabled
 from products.signals.backend.models import (
+    MAX_SCOUT_CONTENT_REVISIONS,
     SignalReport,
     SignalReportArtefact,
     SignalSourceConfig,
@@ -430,6 +431,24 @@ def _capture_steering_attached(*, team: Team, report_id: str, task_id: str, stee
         logger.exception("Failed to capture signals_autostart_steering_attached", report_id=report_id)
 
 
+def _has_unimplemented_work(report: SignalReport) -> bool:
+    """Whether the report has moved past the version its current implementation PR was built from.
+
+    Two producers can move it, and either one is enough. The pipeline researches again, raising
+    `run_count`; a scout rewrites the report's title or summary, raising `content_revision_count`.
+    Each is compared against its own stamp, which is what bounds replacements to one per pass or
+    per rewrite and stops a single decision opening two pull requests.
+
+    Research is capped by its buckets, so the pipeline arm needs no separate cap. A scout has no
+    such ceiling, so the revision arm carries one: past `MAX_SCOUT_CONTENT_REVISIONS` the rewrite
+    still lands, it just stops buying a new pull request.
+    """
+    if report.run_count > (report.implemented_at_run_count or 0):
+        return True
+    revisions = report.content_revision_count or 0
+    return 0 < revisions <= MAX_SCOUT_CONTENT_REVISIONS and revisions > (report.implemented_at_revision_count or 0)
+
+
 def _resolve_supersede(report: SignalReport, decision: ImplementationDecision | None) -> SupersedeDecision:
     if decision is None or not decision_is_current(report, decision) or not targets_still_eligible(report, decision):
         return NO_SUPERSEDE
@@ -535,14 +554,17 @@ def _create_implementation_task_if_absent(
         )
         if already_implemented and not supersede.allowed:
             return False
-        if already_implemented and report.run_count <= (report.implemented_at_run_count or 0):
+        if already_implemented and not _has_unimplemented_work(report):
             # Re-checked under the lock: the caller resolved the supersede decision outside it, so a
             # racing evaluation that already stamped this pass must not open a second replacement.
             return False
         if supersede.allowed and claim is not None:
             release_claim(claim, ArtefactAttribution.system(), takeover=True)
+        # Both stamps move together. The task about to start is built from the report as it stands
+        # now, so neither a research pass nor a rewrite already folded into it may buy another one.
         report.implemented_at_run_count = report.run_count
-        report.save(update_fields=["implemented_at_run_count"])
+        report.implemented_at_revision_count = report.content_revision_count or 0
+        report.save(update_fields=["implemented_at_run_count", "implemented_at_revision_count"])
         exempt_reason = _stamp_billing_exemption(report, billing_exempt_reason)
         team = Team.objects.select_related("organization").get(id=team_id)
         created = tasks_facade.create_and_run_task(
