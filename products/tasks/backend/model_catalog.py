@@ -46,6 +46,8 @@ XHIGH = "xhigh"
 MAX = "max"
 ULTRACODE = "ultracode"
 
+# Every tier any model exposes, shallowest first. A consumer renders an effort ladder from
+# this, so a new tier reaches both projections by being added here and nowhere else.
 REASONING_EFFORTS: tuple[str, ...] = (LOW, MEDIUM, HIGH, XHIGH, MAX, ULTRACODE)
 
 _STANDARD = (LOW, MEDIUM, HIGH)
