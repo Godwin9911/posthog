@@ -136,8 +136,8 @@ export function getCapabilityLadder(
     )
 }
 
-export function getRuntimeAdapterLabel(runtimeAdapter: string): string {
-    return RUNTIME_OPTIONS.find((option) => option.runtimeAdapter === runtimeAdapter)?.label ?? runtimeAdapter
+export function getHarnessLabel(harness: string): string {
+    return RUNTIME_OPTIONS.find((option) => (option.runtimeAdapter ?? option.runtime) === harness)?.label ?? harness
 }
 
 export function getModelLabel(catalogue: ModelChoiceApi[], model: string | null | undefined): string {
