@@ -2,7 +2,7 @@ import { Message, TopicPartition, TopicPartitionOffset, features, librdkafkaVers
 import pLimit from 'p-limit'
 
 import { buildIntegerMatcher } from '~/common/config/config'
-import { KafkaConsumerV2 } from '~/common/kafka/consumer/consumer-v2'
+import { EachBatchResult, KafkaConsumerV2 } from '~/common/kafka/consumer/consumer-v2'
 import { DlqOutput, IngestionWarningsOutput, LogEntriesOutput, OverflowOutput, TophogOutput } from '~/common/outputs'
 import { IngestionOutputs } from '~/common/outputs/ingestion-outputs'
 import { instrumentFn } from '~/common/tracing/tracing-utils'
@@ -50,6 +50,12 @@ import { SessionBatchRecorder } from './sessions/session-batch-recorder'
 import { SessionConsoleLogStore } from './sessions/session-console-log-store'
 import { SessionFilter } from './sessions/session-filter'
 import { SessionTracker } from './sessions/session-tracker'
+import {
+    STAGED_BATCH_LOOKAHEAD,
+    STAGED_BATCH_TIMEOUT_MS,
+    StagedBatchCommitter,
+    StagedBatchRunner,
+} from './staged-batch'
 
 /**
  * Configuration for SessionRecordingIngester.
@@ -67,6 +73,9 @@ export type SessionRecordingIngesterConfig = SessionRecordingConfig &
 /** Builds the session replay pipeline for a deployment (default or ML mirror). */
 export type SessionReplayPipelineFactory = (config: SessionReplayPipelineConfig) => SessionReplayPipeline
 
+/** Builds a runner that overlaps poll batches across stages and records into the ingester's batch through the committer it is handed. */
+export type StagedBatchRunnerFactory = (config: SessionReplayPipelineConfig) => StagedBatchRunner
+
 /** Collaborators a deployment can inject to vary ingester behavior; anything omitted uses the primary default. */
 export interface SessionRecordingIngesterCollaborators {
     fileStorage?: SessionBatchFileStorage
@@ -76,6 +85,8 @@ export interface SessionRecordingIngesterCollaborators {
     keyStore?: KeyStore
     encryptor?: RecordingEncryptor
     createPipeline?: SessionReplayPipelineFactory
+    /** Replaces the pipeline with a staged runner; poll batches then overlap and the consumer keeps {@link STAGED_BATCH_LOOKAHEAD} of them in flight. */
+    createStagedRunner?: StagedBatchRunnerFactory
     /**
      * Namespaces this ingester's session tracker/filter Redis keys. Leave unset for the main lane; a
      * secondary lane (the ML mirror) must set it so it doesn't share seen/block state with the main lane
@@ -129,6 +140,8 @@ export class SessionRecordingIngester {
     private readonly keyStore: KeyStore
     private readonly encryptor: RecordingEncryptor
     private readonly createPipeline: SessionReplayPipelineFactory
+    private readonly createStagedRunner?: StagedBatchRunnerFactory
+    private stagedRunner?: StagedBatchRunner
     private readonly usageBatch: UsageRecordBatch
 
     constructor(
@@ -160,12 +173,16 @@ export class SessionRecordingIngester {
         // The v2 consumer defers the unassign on revoke until in-flight work is drained and the
         // revoke hook has run, so a revoke can flush the current batch (persisting sessions and
         // storing offsets) before the revoked partitions are given up.
+        this.createStagedRunner = collaborators.createStagedRunner
         this.kafkaConsumer = new KafkaConsumerV2({
             topic: this.topic,
             groupId: this.consumerGroupId,
             callEachBatchWhenEmpty: true,
             autoCommit: true,
             autoOffsetStore: false,
+            ...(this.createStagedRunner
+                ? { maxBackgroundTasks: STAGED_BATCH_LOOKAHEAD, backgroundTaskTimeoutMs: STAGED_BATCH_TIMEOUT_MS }
+                : {}),
         })
 
         this.redisPool = redisPool
@@ -266,13 +283,27 @@ export class SessionRecordingIngester {
         }
     }
 
-    public async handleEachBatch(messages: Message[]): Promise<void> {
+    public async handleEachBatch(messages: Message[]): Promise<EachBatchResult> {
         if (messages.length > 0) {
             logger.info('🔁', `blob_ingester_consumer_v2 - handling batch`, {
                 size: messages.length,
                 partitionsInBatch: [...new Set(messages.map((x) => x.partition))],
                 assignedPartitions: this.assignedPartitions,
             })
+        }
+
+        messages.forEach((message) => {
+            SessionRecordingIngesterMetrics.incrementMessageReceived(message.partition)
+        })
+
+        const batchSize = messages.length
+        const batchSizeKb = messages.reduce((acc, m) => (m.value?.length ?? 0) + acc, 0) / 1024
+        SessionRecordingIngesterMetrics.observeKafkaBatchSize(batchSize)
+        SessionRecordingIngesterMetrics.observeKafkaBatchSizeKb(batchSizeKb)
+
+        // A staged runner returns before the batch is done, so the consumer fetches the next batch while this one is still in its stages.
+        if (this.stagedRunner) {
+            return { backgroundTask: this.stagedRunner.run(messages, this.stagedCommitter) }
         }
 
         await instrumentFn(
@@ -284,16 +315,19 @@ export class SessionRecordingIngester {
         )
     }
 
+    private readonly stagedCommitter: StagedBatchCommitter = {
+        currentRecorder: () => this.currentBatch,
+        commit: async (progress, record) => {
+            await this.batchLock(() => record(this.currentBatch))
+            this.sessionBatchManager.trackProcessedOffsets(progress.maxOffsets)
+            this.lagReporter.record(progress.okMessages)
+            if (this.sessionBatchManager.shouldFlush(this.currentBatch, this.lastFlushTime)) {
+                await this.flushCurrentBatch()
+            }
+        },
+    }
+
     private async processBatchMessages(messages: Message[]): Promise<void> {
-        messages.forEach((message) => {
-            SessionRecordingIngesterMetrics.incrementMessageReceived(message.partition)
-        })
-
-        const batchSize = messages.length
-        const batchSizeKb = messages.reduce((acc, m) => (m.value?.length ?? 0) + acc, 0) / 1024
-        SessionRecordingIngesterMetrics.observeKafkaBatchSize(batchSize)
-        SessionRecordingIngesterMetrics.observeKafkaBatchSizeKb(batchSizeKb)
-
         // Run messages through the pipeline (handles restrictions, parsing, team filtering, and recording)
         // and track the highest offset reached per partition — the single place Kafka progress is tracked.
         // Recording holds the batch lock so a concurrent revoke can't flush the batch mid-record.
@@ -362,7 +396,7 @@ export class SessionRecordingIngester {
         this.eventIngestionRestrictionManager = started.value
         this.stopEventIngestionRestrictionManager = started.stop
 
-        this.sessionReplayPipeline = this.createPipeline({
+        const pipelineConfig: SessionReplayPipelineConfig = {
             outputs: this.outputs,
             eventIngestionRestrictionManager: this.eventIngestionRestrictionManager,
             overflowMode: this.config.INGESTION_OVERFLOW_MODE,
@@ -376,7 +410,12 @@ export class SessionRecordingIngester {
             topHog: this.topHog,
             isDebugLoggingEnabled: this.isDebugLoggingEnabled,
             usageBatch: this.usageBatch,
-        })
+        }
+        if (this.createStagedRunner) {
+            this.stagedRunner = this.createStagedRunner(pipelineConfig)
+        } else {
+            this.sessionReplayPipeline = this.createPipeline(pipelineConfig)
+        }
 
         // Check that the storage backend is healthy before starting the consumer
         // This is especially important in local dev with minio

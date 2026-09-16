@@ -19,6 +19,8 @@ export type MlUrlCrawlHistoryOutcome = 'fresh' | 'miss' | 'error'
 export type MlImageSource = 'css' | 'html'
 /** Phases of the ML key work around one Kafka batch: the key bulk read before processing, the key writes and re-read after it, and the deferred publications. */
 export type MlKeyPhase = 'prepare' | 'commit' | 'publish'
+/** The three stages a poll batch passes through, in order. Only anonymize is CPU work; the other two wait on DynamoDB, KMS, Redis, Kafka and S3. */
+export type MlBatchStage = 'prepare' | 'anonymize' | 'commit'
 export type MlKeyRequest =
     | 'kms_generate'
     | 'kms_decrypt'
@@ -142,6 +144,18 @@ export class MlMirrorMetrics {
         labelNames: ['request'],
         buckets: [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, Infinity],
     })
+    private static readonly mlBatchStageDuration = new Histogram({
+        name: 'recording_blob_ingestion_v2_ml_batch_stage_duration_ms',
+        help: 'Wall time one poll batch spent running one stage. Batches overlap across stages, so the anonymize stage running near 100% of wall time is the lane CPU-bound; a lower share means the pod waits on the other two stages',
+        labelNames: ['stage'],
+        buckets: [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, Infinity],
+    })
+    private static readonly mlBatchStageWait = new Histogram({
+        name: 'recording_blob_ingestion_v2_ml_batch_stage_wait_ms',
+        help: 'Time one poll batch waited for a stage to free up after the previous stage finished with it. Wait for anonymize is the previous batch still scrubbing; wait for commit is the previous batch still publishing or flushing',
+        labelNames: ['stage'],
+        buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, Infinity],
+    })
     private static readonly mlUrlsPerRecord = new Histogram({
         name: 'recording_blob_ingestion_v2_ml_urls_per_record',
         help: 'URLs packed into one record on the fetch topic. Bounded in practice by the collector cap per message, since a record holds one domain from one message',
@@ -159,6 +173,11 @@ export class MlMirrorMetrics {
 
     public static observeMlKeyRequest(request: MlKeyRequest, ms: number): void {
         this.mlKeyRequestDuration.labels(request).observe(ms)
+    }
+
+    public static observeMlBatchStage(stage: MlBatchStage, waitMs: number, durationMs: number): void {
+        this.mlBatchStageWait.labels(stage).observe(waitMs)
+        this.mlBatchStageDuration.labels(stage).observe(durationMs)
     }
 
     public static observeMlAnonymizeDuration(impl: MlAnonymizeImpl, ms: number, route: MlAnonymizeRoute = ''): void {

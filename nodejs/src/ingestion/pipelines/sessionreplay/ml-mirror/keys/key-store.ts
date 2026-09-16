@@ -1,3 +1,5 @@
+import { LRUCache } from 'lru-cache'
+
 import { logger } from '~/common/utils/logger'
 import { sessionStartMonth } from '~/ingestion/pipelines/sessionreplay/ml-mirror/session-identifier-format'
 
@@ -62,11 +64,33 @@ function storedKeyId(identity: MlKeyIdentity): TableKey {
         : imageKeyId(identity.teamId, keySessionMonth(identity))
 }
 
-export class MlSessionKeyStore {
+/** What batches in flight at the same time share, so a session that spans consecutive batches gets one key and one write. */
+export interface MlInFlightKeys {
+    pendingCandidate(id: string): MlDataKey | undefined
+    rememberPending(id: string, key: MlDataKey): void
+    rememberCommitted(id: string): void
+    wasCommitted(id: string): boolean
+}
+
+const NO_IN_FLIGHT_KEYS: MlInFlightKeys = {
+    pendingCandidate: () => undefined,
+    rememberPending: () => undefined,
+    rememberCommitted: () => undefined,
+    wasCommitted: () => false,
+}
+
+export class MlSessionKeyStore implements MlInFlightKeys {
+    // A later batch reads DynamoDB before an earlier batch has persisted its keys, so the candidates of uncommitted batches and the ids committed since stand in for what the table does not show yet.
+    private readonly pending = new Map<string, MlDataKey>()
+    private readonly committed: LRUCache<string, true>
+
     constructor(
         private readonly db: MlKeyDynamoDB,
-        private readonly encryption: MlKeyEncryption
-    ) {}
+        private readonly encryption: MlKeyEncryption,
+        committedMax = 100_000
+    ) {
+        this.committed = new LRUCache({ max: committedMax })
+    }
 
     public async prepare(identities: MlSessionIdentity[]): Promise<MlKeyBatch> {
         const eligible = identities.filter((identity) => {
@@ -77,9 +101,26 @@ export class MlSessionKeyStore {
                 return false
             }
         })
-        const batch = new MlKeyBatch(this.db, this.encryption, eligible)
+        const batch = new MlKeyBatch(this.db, this.encryption, eligible, this)
         await batch.read()
         return batch
+    }
+
+    public pendingCandidate(id: string): MlDataKey | undefined {
+        return this.pending.get(id)
+    }
+
+    public rememberPending(id: string, key: MlDataKey): void {
+        this.pending.set(id, key)
+    }
+
+    public rememberCommitted(id: string): void {
+        this.pending.delete(id)
+        this.committed.set(id, true)
+    }
+
+    public wasCommitted(id: string): boolean {
+        return this.committed.has(id)
     }
 }
 
@@ -92,7 +133,8 @@ export class MlKeyBatch {
     constructor(
         private readonly db: MlKeyDynamoDB,
         private readonly encryption: MlKeyEncryption,
-        private readonly identities: MlSessionIdentity[]
+        private readonly identities: MlSessionIdentity[],
+        private readonly inFlight: MlInFlightKeys = NO_IN_FLIGHT_KEYS
     ) {}
 
     public async read(deadline?: AbortSignal): Promise<void> {
@@ -136,11 +178,12 @@ export class MlKeyBatch {
                     }
                     this.keys.set(id, await this.encryption.decrypt(identity, Buffer.from(item.wrapped_key.B)))
                 } else {
-                    let candidate = this.candidates.get(id)
+                    let candidate = this.candidates.get(id) ?? this.inFlight.pendingCandidate(id)
                     if (!candidate) {
                         candidate = await this.encryption.generate(identity)
-                        this.candidates.set(id, candidate)
+                        this.inFlight.rememberPending(id, candidate)
                     }
+                    this.candidates.set(id, candidate)
                     this.keys.set(id, candidate)
                 }
             })
@@ -162,7 +205,7 @@ export class MlKeyBatch {
         const before = [...this.keys.keys()]
         const results = await Promise.allSettled(
             [...this.keys].map(async ([id, key]) => {
-                if (this.state.has(id)) {
+                if (this.state.has(id) || this.inFlight.wasCommitted(id)) {
                     return
                 }
                 const location = storedKeyId(key.identity)
@@ -183,6 +226,7 @@ export class MlKeyBatch {
                 )
                 if (created) {
                     this.encryption.rememberCommitted(key)
+                    this.inFlight.rememberCommitted(id)
                 }
             })
         )

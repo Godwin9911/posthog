@@ -7,6 +7,7 @@ import { createApplyEventRestrictionsStep, createParseHeadersStep } from '~/inge
 import { TopHogRegistry } from '~/ingestion/framework/extensions/tophog'
 import { ok } from '~/ingestion/framework/results'
 import { ParsedMessageData } from '~/ingestion/pipelines/sessionreplay/kafka/types'
+import { SessionReplayBatchProgress } from '~/ingestion/pipelines/sessionreplay/session-replay-pipeline'
 import { SessionBatchRecorder } from '~/ingestion/pipelines/sessionreplay/sessions/session-batch-recorder'
 import { SessionFilter } from '~/ingestion/pipelines/sessionreplay/sessions/session-filter'
 import { SessionTracker } from '~/ingestion/pipelines/sessionreplay/sessions/session-tracker'
@@ -17,12 +18,13 @@ import {
 import { SessionMap, SessionSet } from '~/ingestion/pipelines/sessionreplay/shared/session-map'
 import { TeamService } from '~/ingestion/pipelines/sessionreplay/shared/teams/team-service'
 import { createMockKeyStore } from '~/ingestion/pipelines/sessionreplay/shared/test-helpers'
+import { StagedBatchCommitter } from '~/ingestion/pipelines/sessionreplay/staged-batch'
 import { TeamForReplay } from '~/ingestion/pipelines/sessionreplay/teams/types'
 import { createMockIngestionOutputs } from '~/tests/helpers/mock-ingestion-outputs'
 
 import { createParseAndAnonymizeMessageStep } from './parse-and-anonymize-step'
 import { MlMirrorStagedBatchRunner } from './staged-batch-runner'
-import { buildMlMirrorStagedRunner, runMlMirrorBatch } from './staged-batch-testing'
+import { buildMlMirrorStagedRunner } from './staged-batch-testing'
 
 jest.mock('~/ingestion/common/steps/event-preprocessing', () => ({
     createParseHeadersStep: jest.fn(),
@@ -36,9 +38,11 @@ const mockCreateParseHeadersStep = createParseHeadersStep as jest.Mock
 const mockCreateApplyEventRestrictionsStep = createApplyEventRestrictionsStep as jest.Mock
 const mockCreateParseAndAnonymizeMessageStep = createParseAndAnonymizeMessageStep as jest.Mock
 
-describe('ml-mirror anonymize concurrency', () => {
+describe('ml-mirror staged batch runner', () => {
     const SESSION_A = '01a0a4f0-3200-7000-8000-000000000001'
     const SESSION_B = '01a0a4f0-3200-7000-8000-000000000002'
+    const OPTED_IN_TOKEN = 'opted-in'
+    const OPTED_OUT_TOKEN = 'opted-out'
     const now = DateTime.now()
 
     const retentionService = {
@@ -66,15 +70,16 @@ describe('ml-mirror anonymize concurrency', () => {
     } as unknown as SessionFilter
     const keyStore = createMockKeyStore()
     const teamService = {
-        getTeamByToken: jest.fn().mockResolvedValue({
-            teamId: 1,
-            consoleLogIngestionEnabled: false,
-            aiTrainingOptedIn: true,
-        } satisfies TeamForReplay),
+        getTeamByToken: jest.fn().mockImplementation((token: string) =>
+            Promise.resolve({
+                teamId: 1,
+                consoleLogIngestionEnabled: false,
+                aiTrainingOptedIn: token === OPTED_IN_TOKEN,
+            } satisfies TeamForReplay)
+        ),
         getRetentionPeriodByTeamId: jest.fn().mockResolvedValue(30),
     } as unknown as TeamService
 
-    let recordMock: jest.Mock
     let promiseScheduler: PromiseScheduler
     // Per `${sessionId}:${offset}`: a promise the mocked scrub awaits before completing.
     let scrubGates: Map<string, Promise<void>>
@@ -82,7 +87,6 @@ describe('ml-mirror anonymize concurrency', () => {
 
     beforeEach(() => {
         jest.clearAllMocks()
-        recordMock = jest.fn().mockResolvedValue(undefined)
         promiseScheduler = new PromiseScheduler()
         scrubGates = new Map()
         scrubStarts = new Set()
@@ -154,7 +158,7 @@ describe('ml-mirror anonymize concurrency', () => {
         )
     }
 
-    function message(sessionId: string, offset: number): Message {
+    function message(sessionId: string, offset: number, token = OPTED_IN_TOKEN): Message {
         return {
             partition: 0,
             offset,
@@ -163,7 +167,7 @@ describe('ml-mirror anonymize concurrency', () => {
             key: Buffer.from('k'),
             timestamp: Date.now(),
             headers: [
-                { token: Buffer.from('test-token') },
+                { token: Buffer.from(token) },
                 { session_id: Buffer.from(sessionId) },
                 { distinct_id: Buffer.from('user-123') },
             ],
@@ -171,10 +175,17 @@ describe('ml-mirror anonymize concurrency', () => {
         } as unknown as Message
     }
 
-    function recordedOffsets(sessionId: string): number[] {
-        return recordMock.mock.calls
-            .filter((call) => call[0].message.session_id === sessionId)
-            .map((call) => call[0].message.metadata.offset)
+    function recorder(): jest.Mocked<SessionBatchRecorder> {
+        return {
+            record: jest.fn().mockResolvedValue(undefined),
+            getRetention: jest.fn().mockReturnValue(undefined),
+        } as unknown as jest.Mocked<SessionBatchRecorder>
+    }
+
+    function gate(key: string): () => void {
+        let release!: () => void
+        scrubGates.set(key, new Promise<void>((resolve) => (release = resolve)))
+        return release
     }
 
     async function until(condition: () => boolean): Promise<void> {
@@ -186,35 +197,119 @@ describe('ml-mirror anonymize concurrency', () => {
         }
     }
 
-    it('scrubs messages concurrently, including messages of the same session', async () => {
-        let releaseFirstScrub!: () => void
-        let releaseSecondScrub!: () => void
-        scrubGates.set(`${SESSION_A}:1`, new Promise<void>((resolve) => (releaseFirstScrub = resolve)))
-        scrubGates.set(`${SESSION_A}:2`, new Promise<void>((resolve) => (releaseSecondScrub = resolve)))
+    it('prepares the next batch while the current one scrubs, and scrubs it only once the current one is done', async () => {
+        const releaseA = gate(`${SESSION_A}:1`)
+        const releaseB = gate(`${SESSION_B}:2`)
+        const runner = buildRunner()
+        const committed: number[] = []
+        const committer: StagedBatchCommitter = {
+            currentRecorder: recorder,
+            commit: async (progress, record) => {
+                await record(recorder())
+                committed.push(...progress.okMessages.map((m) => m.offset))
+            },
+        }
 
-        const recorder = {
-            record: recordMock,
-            getRetention: jest.fn().mockReturnValue(undefined),
-        } as unknown as SessionBatchRecorder
-        const run = runMlMirrorBatch(
-            buildRunner(),
-            [message(SESSION_A, 1), message(SESSION_A, 2), message(SESSION_B, 3)],
-            recorder
-        )
-
+        const first = runner.run([message(SESSION_A, 1)], committer)
+        const second = runner.run([message(SESSION_B, 2)], committer)
         try {
-            // Both of sess-a's scrubs are in flight at once — sequential processing never starts
-            // the second scrub while the first is gated, and per-session grouping never starts a
-            // session's second message while its first is gated.
-            await until(() => scrubStarts.has(`${SESSION_A}:1`) && scrubStarts.has(`${SESSION_A}:2`))
+            await until(() => scrubStarts.has(`${SESSION_A}:1`))
+            // The second batch's prepare stage ran to its end (the seen-mark is its last step) while the first batch's scrub was still held.
+            await until(() => (sessionTracker.markSeen as jest.Mock).mock.calls.length === 2)
+            expect(scrubStarts.has(`${SESSION_B}:2`)).toBe(false)
+            releaseA()
+            await until(() => scrubStarts.has(`${SESSION_B}:2`))
         } finally {
-            releaseFirstScrub()
-            releaseSecondScrub()
+            releaseA()
+            releaseB()
+        }
+        await Promise.all([first, second])
+
+        expect(committed).toEqual([1, 2])
+    })
+
+    it('commits batches in order even when a later batch finishes scrubbing first', async () => {
+        const releaseA = gate(`${SESSION_A}:1`)
+        const runner = buildRunner()
+        const committed: number[] = []
+        const committer: StagedBatchCommitter = {
+            currentRecorder: recorder,
+            commit: async (progress, record) => {
+                await record(recorder())
+                committed.push(...progress.okMessages.map((m) => m.offset))
+            },
+        }
+
+        const first = runner.run([message(SESSION_A, 1)], committer)
+        const second = runner.run([message(SESSION_B, 2)], committer)
+        try {
+            await until(() => scrubStarts.has(`${SESSION_A}:1`))
+            await new Promise(setImmediate)
+            expect(committed).toEqual([])
+        } finally {
+            releaseA()
+        }
+        await Promise.all([first, second])
+
+        expect(committed).toEqual([1, 2])
+    })
+
+    it('records into the recorder current at commit time, not the one current at feed time', async () => {
+        const releaseA = gate(`${SESSION_A}:1`)
+        const runner = buildRunner()
+        const fedWith = recorder()
+        const flushedInto = recorder()
+        let current = fedWith
+        const committer: StagedBatchCommitter = {
+            currentRecorder: () => current,
+            commit: (_progress, record) => record(current),
+        }
+
+        const run = runner.run([message(SESSION_A, 1)], committer)
+        try {
+            await until(() => scrubStarts.has(`${SESSION_A}:1`))
+            current = flushedInto
+        } finally {
+            releaseA()
         }
         await run
 
-        // No ordering guarantees, so only membership is asserted.
-        expect(recordedOffsets(SESSION_A).sort()).toEqual([1, 2])
-        expect(recordedOffsets(SESSION_B)).toEqual([3])
+        expect(fedWith.record).not.toHaveBeenCalled()
+        expect(flushedInto.record).toHaveBeenCalledTimes(1)
+    })
+
+    it('advances the offset past dropped messages but reports lag only for recorded ones', async () => {
+        const runner = buildRunner()
+        let progress: SessionReplayBatchProgress | undefined
+        const committer: StagedBatchCommitter = {
+            currentRecorder: recorder,
+            commit: async (batchProgress, record) => {
+                await record(recorder())
+                progress = batchProgress
+            },
+        }
+
+        await runner.run([message(SESSION_A, 5, OPTED_OUT_TOKEN), message(SESSION_B, 6)], committer)
+
+        expect(progress?.maxOffsets.get(0)).toBe(6)
+        expect(progress?.okMessages.map((m) => m.offset)).toEqual([6])
+    })
+
+    it('still tracks offsets for a batch that drops every message', async () => {
+        const runner = buildRunner()
+        let progress: SessionReplayBatchProgress | undefined
+        const committer: StagedBatchCommitter = {
+            currentRecorder: recorder,
+            commit: async (batchProgress, record) => {
+                await record(recorder())
+                progress = batchProgress
+            },
+        }
+
+        await runner.run([message(SESSION_A, 7, OPTED_OUT_TOKEN)], committer)
+
+        expect(progress?.maxOffsets.get(0)).toBe(7)
+        expect(progress?.okMessages).toEqual([])
+        expect(scrubStarts.size).toBe(0)
     })
 })
