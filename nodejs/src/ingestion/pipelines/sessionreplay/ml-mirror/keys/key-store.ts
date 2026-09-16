@@ -22,7 +22,9 @@ const COMMIT_ATTEMPTS = 10
 const COMMIT_BUDGET_MS = 45_000
 const COMMIT_BACKOFF_BASE_MS = 100
 const COMMIT_BACKOFF_CAP_MS = 3_000
+const STALE_STORED_KEY_ERROR = 'MlStaleStoredKeyError'
 const TRANSIENT_ERRORS = new Set([
+    STALE_STORED_KEY_ERROR,
     'ProvisionedThroughputExceededException',
     'ThrottlingException',
     'RequestLimitExceeded',
@@ -68,28 +70,31 @@ function storedKeyId(identity: MlKeyIdentity): TableKey {
 export interface MlInFlightKeys {
     pendingCandidate(id: string): MlDataKey | undefined
     rememberPending(id: string, key: MlDataKey): void
-    rememberCommitted(id: string): void
-    wasCommitted(id: string): boolean
+    rememberStored(id: string): void
+    forgetStored(id: string): void
+    isStored(id: string): boolean
 }
 
 const NO_IN_FLIGHT_KEYS: MlInFlightKeys = {
     pendingCandidate: () => undefined,
     rememberPending: () => undefined,
-    rememberCommitted: () => undefined,
-    wasCommitted: () => false,
+    rememberStored: () => undefined,
+    forgetStored: () => undefined,
+    isStored: () => false,
 }
 
 export class MlSessionKeyStore implements MlInFlightKeys {
-    // A later batch reads DynamoDB before an earlier batch has persisted its keys, so the candidates of uncommitted batches and the ids committed since stand in for what the table does not show yet.
-    private readonly pending = new Map<string, MlDataKey>()
-    private readonly committed: LRUCache<string, true>
+    // A later batch reads DynamoDB before an earlier batch has persisted its keys, so the candidates of uncommitted batches and the ids stored since stand in for what the table does not show yet. Both are bounded because a batch that never commits leaves its candidates behind.
+    private readonly pending: LRUCache<string, MlDataKey>
+    private readonly stored: LRUCache<string, true>
 
     constructor(
         private readonly db: MlKeyDynamoDB,
         private readonly encryption: MlKeyEncryption,
-        committedMax = 100_000
+        inFlightMax = 100_000
     ) {
-        this.committed = new LRUCache({ max: committedMax })
+        this.pending = new LRUCache({ max: inFlightMax })
+        this.stored = new LRUCache({ max: inFlightMax })
     }
 
     public async prepare(identities: MlSessionIdentity[]): Promise<MlKeyBatch> {
@@ -114,13 +119,17 @@ export class MlSessionKeyStore implements MlInFlightKeys {
         this.pending.set(id, key)
     }
 
-    public rememberCommitted(id: string): void {
+    public rememberStored(id: string): void {
         this.pending.delete(id)
-        this.committed.set(id, true)
+        this.stored.set(id, true)
     }
 
-    public wasCommitted(id: string): boolean {
-        return this.committed.has(id)
+    public forgetStored(id: string): void {
+        this.stored.delete(id)
+    }
+
+    public isStored(id: string): boolean {
+        return this.stored.has(id)
     }
 }
 
@@ -176,9 +185,15 @@ export class MlKeyBatch {
                     if (!item.wrapped_key?.B || item.organization_id?.S !== identity.organizationId) {
                         throw new Error('Invalid stored ML key identity')
                     }
+                    if (this.candidates.has(id)) {
+                        this.inFlight.rememberStored(id)
+                    }
                     this.keys.set(id, await this.encryption.decrypt(identity, Buffer.from(item.wrapped_key.B)))
                 } else {
                     let candidate = this.candidates.get(id) ?? this.inFlight.pendingCandidate(id)
+                    if (candidate && candidate.identity.organizationId !== identity.organizationId) {
+                        candidate = undefined
+                    }
                     if (!candidate) {
                         candidate = await this.encryption.generate(identity)
                         this.inFlight.rememberPending(id, candidate)
@@ -203,9 +218,14 @@ export class MlKeyBatch {
     // The index entry goes first and is idempotent, so every stored key has an index entry even when the key put fails or a retried put reports the batch's own write as a competitor's. An index entry without a key is harmless: the month sweep leaves a tombstone that a later key put respects.
     private async persist(deadline: AbortSignal): Promise<void> {
         const before = [...this.keys.keys()]
+        const skipped: string[] = []
         const results = await Promise.allSettled(
             [...this.keys].map(async ([id, key]) => {
-                if (this.state.has(id) || this.inFlight.wasCommitted(id)) {
+                if (this.state.has(id)) {
+                    return
+                }
+                if (this.inFlight.isStored(id)) {
+                    skipped.push(id)
                     return
                 }
                 const location = storedKeyId(key.identity)
@@ -226,7 +246,7 @@ export class MlKeyBatch {
                 )
                 if (created) {
                     this.encryption.rememberCommitted(key)
-                    this.inFlight.rememberCommitted(id)
+                    this.inFlight.rememberStored(id)
                 }
             })
         )
@@ -236,6 +256,14 @@ export class MlKeyBatch {
             throw failure.reason
         }
         await this.read(deadline)
+        // A key this process remembers as stored can have been swept since, and the batch must not encrypt with a key the table does not hold.
+        const swept = skipped.filter((id) => !this.state.has(id))
+        if (swept.length) {
+            swept.forEach((id) => this.inFlight.forgetStored(id))
+            throw Object.assign(new Error('ML key remembered as stored is gone from the table'), {
+                name: STALE_STORED_KEY_ERROR,
+            })
+        }
         const dropped = before.filter((id) => !this.keys.has(id)).length
         if (dropped) {
             logger.info('🔑', 'ml_key_commit_dropped_blocked', { dropped })

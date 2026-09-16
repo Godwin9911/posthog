@@ -354,6 +354,28 @@ describe('ML session key batches', () => {
         expect(boundary.writes).toBe(4)
     })
 
+    it('does not hand an uncommitted candidate to a batch that names another organization', async () => {
+        await store.prepare([session])
+        await store.prepare([{ ...session, organizationId: 'organization-other' }])
+        expect(generated).toBe(4)
+    })
+
+    it('writes a key it remembers as stored once the table no longer holds it', async () => {
+        const first = await store.prepare([session])
+        await first.commit()
+        const location = tableKeyString(sessionKeyId(session.teamId, session.sessionId))
+        boundary.items.delete(location)
+        const next = await store.prepare([session])
+        jest.useFakeTimers()
+        const committing = next.commit()
+        await jest.runAllTimersAsync()
+        await committing
+        expect(boundary.items.has(location)).toBe(true)
+        expect(next.get(session.teamId, session.sessionId)!.session.wrapped).toEqual(
+            Buffer.from(boundary.items.get(location)!.wrapped_key!.B!)
+        )
+    })
+
     it('publishes only after key writes commit and hands delivery acks to the scheduler', async () => {
         const identity = { ...session, sessionId: '01a0a4f0-3200-7000-8000-000000000001' }
         const controller = new MlKeyBatchController(store, encryption)
@@ -365,6 +387,7 @@ describe('ML session key batches', () => {
         })
         let started = 0
         const input = {
+            message: {} as Message,
             team: { teamId: identity.teamId },
             headers: { session_id: identity.sessionId },
             sessionKey: await controller.getKey(identity.sessionId, identity.teamId),
@@ -396,6 +419,7 @@ describe('ML session key batches', () => {
         const flushed = {} as SessionBatchRecorder
         const current = {} as SessionBatchRecorder
         const input = {
+            message: {} as Message,
             team: { teamId: identity.teamId },
             headers: { session_id: identity.sessionId },
             sessionKey: await controller.getKey(identity.sessionId, identity.teamId),
@@ -420,6 +444,7 @@ describe('ML session key batches', () => {
             release = resolve
         })
         const input = {
+            message: {} as Message,
             team: { teamId: identity.teamId },
             headers: { session_id: identity.sessionId },
             sessionKey: await controller.getKey(identity.sessionId, identity.teamId),

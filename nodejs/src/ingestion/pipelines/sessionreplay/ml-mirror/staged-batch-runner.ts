@@ -7,7 +7,6 @@ import { ChunkPipelineResultWithContext } from '~/ingestion/framework/chunk-pipe
 import { createBatch } from '~/ingestion/framework/helpers'
 import { OkResultWithContext } from '~/ingestion/framework/pipeline.interface'
 import { isOkResult } from '~/ingestion/framework/results'
-import { SessionReplayBatchProgress } from '~/ingestion/pipelines/sessionreplay/session-replay-pipeline'
 import { StagedBatchCommitter, StagedBatchRunner } from '~/ingestion/pipelines/sessionreplay/staged-batch'
 
 import { MlBatchStage, MlMirrorMetrics } from './metrics'
@@ -33,37 +32,47 @@ export class MlMirrorStagedBatchRunner implements StagedBatchRunner {
         private readonly promiseScheduler: PromiseScheduler
     ) {}
 
+    // Once a batch fails, later batches must not commit: their offsets would be tracked past the failed batch's messages, and the consumer stores whatever was tracked when it stops.
+    private failure?: unknown
+
     public run(messages: Message[], committer: StagedBatchCommitter): Promise<void> {
         const queuedAt = performance.now()
         const prepared = this.stages.prepare(() =>
             this.timed('prepare', queuedAt, async () => {
+                if (!messages.length) {
+                    return { elements: [], handle: undefined }
+                }
                 // The recorder stamped here only satisfies the input type: the deferred record step rebinds to the recorder current at commit time.
                 const recorder = committer.currentRecorder()
                 const batch = createBatch(messages.map((message) => ({ message, sessionBatchRecorder: recorder })))
-                const elements = await drainBatch(this.prepare, batch, this.promiseScheduler)
-                return { elements }
+                const { elements, batchContext } = await drainBatch(this.prepare, batch, this.promiseScheduler)
+                return { elements, handle: batchContext.mlBatch }
             })
         )
         const anonymized = this.stages.anonymize(async () => {
-            const { elements, finishedAt } = await prepared
+            const { elements, handle, finishedAt } = await prepared
             return this.timed('anonymize', finishedAt, async () => {
                 const survivors = elements.flatMap(({ result }) => (isOkResult(result) ? [result.value] : []))
-                const anonymizedElements = survivors.length
-                    ? await drainBatch(this.anonymize, createBatch(survivors), this.promiseScheduler)
-                    : []
-                return { progress: progressOf(elements, anonymizedElements), handle: survivors[0]?.mlBatch }
+                if (survivors.length) {
+                    await drainBatch(this.anonymize, createBatch(survivors), this.promiseScheduler)
+                }
+                return { maxOffsets: maxOffsetsOf(elements), handle }
             })
         })
-        return this.stages.commit(async () => {
-            const { progress, handle, finishedAt } = await anonymized
+        const committed = this.stages.commit(async () => {
+            const { maxOffsets, handle, finishedAt } = await anonymized
             await this.timed('commit', finishedAt, async () => {
                 await committer.commit(
-                    progress,
-                    (recorder) => handle?.commit(recorder, this.promiseScheduler) ?? Promise.resolve()
+                    maxOffsets,
+                    (recorder) => handle?.commit(recorder, this.promiseScheduler) ?? Promise.resolve([])
                 )
                 return {}
             })
         })
+        // Each stage's rejection reaches the caller through the stage after it, so the intermediate promises must not count as unhandled while they wait for a slot.
+        prepared.catch(() => undefined)
+        anonymized.catch(() => undefined)
+        return committed
     }
 
     private async timed<T extends object>(
@@ -71,11 +80,19 @@ export class MlMirrorStagedBatchRunner implements StagedBatchRunner {
         readyAt: number,
         run: () => Promise<T>
     ): Promise<T & { finishedAt: number }> {
+        if (this.failure !== undefined) {
+            throw this.failure
+        }
         const startedAt = performance.now()
-        const result = await run()
-        const finishedAt = performance.now()
-        MlMirrorMetrics.observeMlBatchStage(stage, startedAt - readyAt, finishedAt - startedAt)
-        return { ...result, finishedAt }
+        try {
+            const result = await run()
+            const finishedAt = performance.now()
+            MlMirrorMetrics.observeMlBatchStage(stage, startedAt - readyAt, finishedAt - startedAt)
+            return { ...result, finishedAt }
+        } catch (error) {
+            this.failure ??= error
+            throw error
+        }
     }
 }
 
@@ -86,35 +103,34 @@ type StageElements<TOutput, COutput extends BatchingContext, R extends string> =
 >
 
 // Each stage pipeline holds one batch at a time and the runner feeds each stage in batch order, so draining to null returns exactly the batch just fed.
-async function drainBatch<TInput, TOutput, CInput, COutput extends BatchingContext, R extends string>(
-    pipeline: BatchingPipeline<TInput, TOutput, CInput, Record<never, object>, COutput, R>,
+async function drainBatch<TInput, TOutput, CInput, CBatch, COutput extends BatchingContext, R extends string>(
+    pipeline: BatchingPipeline<TInput, TOutput, CInput, CBatch, COutput, R>,
     batch: OkResultWithContext<TInput, CInput>[],
     promiseScheduler: PromiseScheduler
-): Promise<StageElements<TOutput, COutput, R>> {
+): Promise<{ elements: StageElements<TOutput, COutput, R>; batchContext: CBatch }> {
     const feedResult = await pipeline.feed(batch, {})
     if (!feedResult.ok) {
         throw new Error(`ML mirror stage rejected feed: ${feedResult.kind} (${feedResult.reason})`)
     }
-    let elements: StageElements<TOutput, COutput, R> | undefined
+    let drained: { elements: StageElements<TOutput, COutput, R>; batchContext: CBatch } | undefined
     let batchResult = await pipeline.next()
     while (batchResult !== null) {
         for (const sideEffect of batchResult.sideEffects ?? []) {
             void promiseScheduler.schedule(sideEffect)
         }
-        elements = batchResult.elements
+        drained = { elements: batchResult.elements, batchContext: batchResult.batchContext }
         batchResult = await pipeline.next()
     }
-    if (!elements) {
+    if (!drained) {
         throw new Error('ML mirror stage returned no batch')
     }
-    return elements
+    return drained
 }
 
-// Every message reaches a terminal result in the prepare stage or the anonymize stage, so the prepare elements carry every offset and the anonymize elements say which messages were recorded.
-function progressOf<R extends string>(
-    prepared: ChunkPipelineResultWithContext<unknown, { message: Message }, R>,
-    anonymized: ChunkPipelineResultWithContext<unknown, { message: Message }, R>
-): SessionReplayBatchProgress {
+// Every message reaches a terminal result in the prepare stage or later, and every disposition advances the offset, so the prepare elements carry every offset of the batch.
+function maxOffsetsOf<R extends string>(
+    prepared: ChunkPipelineResultWithContext<unknown, { message: Message }, R>
+): Map<number, number> {
     const maxOffsets = new Map<number, number>()
     for (const { context } of prepared) {
         const { partition, offset } = context.message
@@ -123,6 +139,5 @@ function progressOf<R extends string>(
             maxOffsets.set(partition, offset)
         }
     }
-    const okMessages = anonymized.flatMap(({ result, context }) => (isOkResult(result) ? [context.message] : []))
-    return { maxOffsets, okMessages }
+    return maxOffsets
 }

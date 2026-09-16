@@ -7,7 +7,6 @@ import { createApplyEventRestrictionsStep, createParseHeadersStep } from '~/inge
 import { TopHogRegistry } from '~/ingestion/framework/extensions/tophog'
 import { ok } from '~/ingestion/framework/results'
 import { ParsedMessageData } from '~/ingestion/pipelines/sessionreplay/kafka/types'
-import { SessionReplayBatchProgress } from '~/ingestion/pipelines/sessionreplay/session-replay-pipeline'
 import { SessionBatchRecorder } from '~/ingestion/pipelines/sessionreplay/sessions/session-batch-recorder'
 import { SessionFilter } from '~/ingestion/pipelines/sessionreplay/sessions/session-filter'
 import { SessionTracker } from '~/ingestion/pipelines/sessionreplay/sessions/session-tracker'
@@ -204,9 +203,8 @@ describe('ml-mirror staged batch runner', () => {
         const committed: number[] = []
         const committer: StagedBatchCommitter = {
             currentRecorder: recorder,
-            commit: async (progress, record) => {
-                await record(recorder())
-                committed.push(...progress.okMessages.map((m) => m.offset))
+            commit: async (_maxOffsets, record) => {
+                committed.push(...(await record(recorder())).map((m) => m.offset))
             },
         }
 
@@ -234,9 +232,8 @@ describe('ml-mirror staged batch runner', () => {
         const committed: number[] = []
         const committer: StagedBatchCommitter = {
             currentRecorder: recorder,
-            commit: async (progress, record) => {
-                await record(recorder())
-                committed.push(...progress.okMessages.map((m) => m.offset))
+            commit: async (_maxOffsets, record) => {
+                committed.push(...(await record(recorder())).map((m) => m.offset))
             },
         }
 
@@ -262,7 +259,9 @@ describe('ml-mirror staged batch runner', () => {
         let current = fedWith
         const committer: StagedBatchCommitter = {
             currentRecorder: () => current,
-            commit: (_progress, record) => record(current),
+            commit: async (_maxOffsets, record) => {
+                await record(current)
+            },
         }
 
         const run = runner.run([message(SESSION_A, 1)], committer)
@@ -278,38 +277,73 @@ describe('ml-mirror staged batch runner', () => {
         expect(flushedInto.record).toHaveBeenCalledTimes(1)
     })
 
-    it('advances the offset past dropped messages but reports lag only for recorded ones', async () => {
+    it('advances the offset past dropped messages but reports only recorded ones as recorded', async () => {
         const runner = buildRunner()
-        let progress: SessionReplayBatchProgress | undefined
+        let maxOffsets: Map<number, number> | undefined
+        let recorded: number[] = []
         const committer: StagedBatchCommitter = {
             currentRecorder: recorder,
-            commit: async (batchProgress, record) => {
-                await record(recorder())
-                progress = batchProgress
+            commit: async (batchMaxOffsets, record) => {
+                recorded = (await record(recorder())).map((m) => m.offset)
+                maxOffsets = batchMaxOffsets
             },
         }
 
         await runner.run([message(SESSION_A, 5, OPTED_OUT_TOKEN), message(SESSION_B, 6)], committer)
 
-        expect(progress?.maxOffsets.get(0)).toBe(6)
-        expect(progress?.okMessages.map((m) => m.offset)).toEqual([6])
+        expect(maxOffsets?.get(0)).toBe(6)
+        expect(recorded).toEqual([6])
+    })
+
+    it('commits an empty poll batch so the ingester can still flush on age', async () => {
+        const runner = buildRunner()
+        const commit = jest.fn().mockImplementation((_maxOffsets, record) => record(recorder()))
+
+        await runner.run([], { currentRecorder: recorder, commit })
+
+        expect(commit).toHaveBeenCalledTimes(1)
+        expect(commit.mock.calls[0][0]).toEqual(new Map())
+    })
+
+    it('never commits a later batch once an earlier batch has failed', async () => {
+        const releaseA = gate(`${SESSION_A}:1`)
+        mockCreateParseAndAnonymizeMessageStep.mockReturnValue(
+            async (input: { message: Message; headers: Record<string, string> }) => {
+                scrubStarts.add(`${input.headers.session_id}:${input.message.offset}`)
+                await (scrubGates.get(`${input.headers.session_id}:${input.message.offset}`) ?? Promise.resolve())
+                throw new Error('addon crashed')
+            }
+        )
+        const runner = buildRunner()
+        const commit = jest.fn().mockImplementation((_maxOffsets, record) => record(recorder()))
+        const committer: StagedBatchCommitter = { currentRecorder: recorder, commit }
+
+        const first = runner.run([message(SESSION_A, 1)], committer)
+        const second = runner.run([message(SESSION_B, 2)], committer)
+        await until(() => scrubStarts.has(`${SESSION_A}:1`))
+        releaseA()
+
+        await expect(first).rejects.toThrow('addon crashed')
+        await expect(second).rejects.toThrow('addon crashed')
+        expect(commit).not.toHaveBeenCalled()
     })
 
     it('still tracks offsets for a batch that drops every message', async () => {
         const runner = buildRunner()
-        let progress: SessionReplayBatchProgress | undefined
+        let maxOffsets: Map<number, number> | undefined
+        let recorded: Message[] = []
         const committer: StagedBatchCommitter = {
             currentRecorder: recorder,
-            commit: async (batchProgress, record) => {
-                await record(recorder())
-                progress = batchProgress
+            commit: async (batchMaxOffsets, record) => {
+                recorded = await record(recorder())
+                maxOffsets = batchMaxOffsets
             },
         }
 
         await runner.run([message(SESSION_A, 7, OPTED_OUT_TOKEN)], committer)
 
-        expect(progress?.maxOffsets.get(0)).toBe(7)
-        expect(progress?.okMessages).toEqual([])
+        expect(maxOffsets?.get(0)).toBe(7)
+        expect(recorded).toEqual([])
         expect(scrubStarts.size).toBe(0)
     })
 })

@@ -30,7 +30,7 @@ import { MlImageFetchOutput, MlImageScrubOutput } from '~/ingestion/pipelines/se
 import { SessionKey } from '~/ingestion/pipelines/sessionreplay/shared/types'
 import { TeamForReplay } from '~/ingestion/pipelines/sessionreplay/teams/types'
 
-import { MlBatchHandle } from './batch-handle'
+import { MlBatchHandle, MlDeferrableInput } from './batch-handle'
 import { MlKeyBatchController } from './keys/batch-controller'
 import { MlSessionKeys } from './keys/key-store'
 import { createParseAndAnonymizeMessageStep } from './parse-and-anonymize-step'
@@ -86,11 +86,16 @@ export interface MlPreparedMessage extends SessionReplayPipelineInput {
     mlKeys?: MlSessionKeys
 }
 
+/** The batch handle also rides on the batch context, so the commit stage reaches it when no message survived. */
+export interface MlBatchContext {
+    mlBatch: MlBatchHandle
+}
+
 export type MlPreparePipeline = BatchingPipeline<
     SessionReplayPipelineInput,
     MlPreparedMessage,
     MessageContext,
-    Record<never, object>,
+    MlBatchContext,
     MessageContext & BatchingContext,
     OverflowOutput
 >
@@ -129,13 +134,17 @@ export function createMlMirrorPreparePipeline(
         SessionReplayPipelineInput,
         MlPreparedMessage,
         MessageContext,
-        Record<never, object>,
+        MlBatchContext,
         MessageContext,
         OverflowOutput
     >(
         (beforeBatch) =>
-            beforeBatch.pipe(function passThroughBeforeBatch(input) {
-                return Promise.resolve(ok(input))
+            beforeBatch.pipe(function openMlBatch(input) {
+                const batchContext: MlBatchContext & typeof input.batchContext = {
+                    ...input.batchContext,
+                    mlBatch: new MlBatchHandle(mlOptions.keyManager),
+                }
+                return Promise.resolve(ok({ ...input, batchContext }))
             }),
         (batch) =>
             batch
@@ -150,8 +159,12 @@ export function createMlMirrorPreparePipeline(
                             )
                             .gather()
                             .pipeChunk(async function readMlKeyBatch(values) {
-                                const mlBatch = new MlBatchHandle(mlOptions.keyManager)
-                                if (mlOptions.keyManager && values.length) {
+                                if (!values.length) {
+                                    return []
+                                }
+                                // The batching pipeline merges the batch context into every element, which the preprocessing types do not carry.
+                                const { mlBatch } = values[0] as unknown as MlBatchContext
+                                if (mlOptions.keyManager) {
                                     mlBatch.keys = await mlOptions.keyManager.prepare(
                                         values.map((value) => {
                                             if (!value.team.organizationId) {
@@ -208,9 +221,9 @@ export function createMlMirrorAnonymizePipeline(
 
     const pipelineConfig: PipelineConfig<OverflowOutput> = { outputs, promiseScheduler }
     const topHogWrapper = createTopHogWrapper(topHog)
-    function deferPublication<
-        T extends RecordSessionEventStepInput & { headers: { session_id: string }; mlBatch: MlBatchHandle },
-    >(step: ProcessingStep<T, T>): ProcessingStep<T, T> {
+    function deferPublication<T extends RecordSessionEventStepInput & MlDeferrableInput & { mlBatch: MlBatchHandle }>(
+        step: ProcessingStep<T, T>
+    ): ProcessingStep<T, T> {
         return (input) => input.mlBatch.defer(input, step)
     }
 

@@ -1,3 +1,4 @@
+import { Message } from 'node-rdkafka'
 import pLimit from 'p-limit'
 
 import { PromiseScheduler } from '~/common/utils/promise-scheduler'
@@ -10,6 +11,7 @@ import { MlKeyBatch } from './keys/key-store'
 import { MlMirrorMetrics } from './metrics'
 
 export interface MlDeferrableInput {
+    message: Message
     team: { teamId: number }
     headers: { session_id: string }
     sessionKey: SessionKey
@@ -17,7 +19,8 @@ export interface MlDeferrableInput {
 }
 
 type SideEffectSink = (promises: Promise<unknown>[]) => Promise<void>
-type DeferredAction = (recorder: SessionBatchRecorder, sideEffects: SideEffectSink) => Promise<void>
+/** Runs the deferred step and answers with the message it recorded, or nothing when the step skipped or failed it. */
+type DeferredAction = (recorder: SessionBatchRecorder, sideEffects: SideEffectSink) => Promise<Message | undefined>
 
 /**
  * One poll batch's publication state: the keys it prepared and the record and produce steps it put off
@@ -40,18 +43,20 @@ export class MlBatchHandle {
                 ? this.keyManager.sessionKey(this.keys, input.headers.session_id, input.team.teamId)
                 : input.sessionKey
             if (key.sessionState === 'deleted') {
-                return
+                return undefined
             }
             const result = await action({ ...input, sessionKey: key, sessionBatchRecorder: recorder })
-            if (result.type === PipelineResultType.OK) {
-                await sideEffects(result.sideEffects ?? [])
+            if (result.type !== PipelineResultType.OK) {
+                return undefined
             }
+            await sideEffects(result.sideEffects ?? [])
+            return input.message
         })
         return Promise.resolve(ok(input))
     }
 
     // The recorder is the one current when the commit runs, not when the batch was fed: a flush can land between the two, and a record into the flushed recorder would be lost. Delivery acks go to the consumer's scheduler, which drains before offsets commit, so publication runs at enqueue speed.
-    public async commit(recorder: SessionBatchRecorder, scheduler?: PromiseScheduler): Promise<void> {
+    public async commit(recorder: SessionBatchRecorder, scheduler?: PromiseScheduler): Promise<Message[]> {
         if (this.keys && this.keyManager) {
             await this.keyManager.commit(this.keys)
         }
@@ -70,7 +75,8 @@ export class MlBatchHandle {
         }
         const actions = this.deferred
         this.deferred = []
-        await Promise.all(actions.map((action) => this.publish(() => action(recorder, sideEffects))))
+        const recorded = await Promise.all(actions.map((action) => this.publish(() => action(recorder, sideEffects))))
         MlMirrorMetrics.observeMlKeyPhase('publish', performance.now() - startedAt)
+        return recorded.filter((message): message is Message => message !== undefined)
     }
 }

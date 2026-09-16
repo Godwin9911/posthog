@@ -59,9 +59,9 @@ Bulk reads use batches of at most 100 keys; each new key is one conditional put,
 Reads use strongly consistent `BatchGetItem` requests with bounded retries for unprocessed keys.
 
 The mirror runs each Kafka batch through three stages that each hold one batch at a time, in batch order: prepare (steps 1 and 2, with session tracking), anonymize (the scrub), and commit (steps 3 and 4, then offset tracking and any flush).
-Neighbouring batches overlap across stages, so one batch waits on DynamoDB, KMS, Kafka or S3 while another scrubs.
+Neighboring batches overlap across stages, so one batch waits on DynamoDB, KMS, Kafka or S3 while another scrubs.
 The anonymize stage does not admit a batch while an earlier batch is in it.
-The record step writes to the recorder that is current at commit time, so a flush between the two does not lose the batch.
+The record step writes to the recorder that is current at commit time, not the one that was current when the batch was read from Kafka, so a flush between those two moments does not lose the batch.
 A session that spans consecutive batches reuses the key candidate of the earlier batch, and the later batch skips the put once the earlier batch has committed it.
 
 KMS plaintext caches reduce repeated decrypt calls.

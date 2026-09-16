@@ -33,7 +33,9 @@ export function buildMlMirrorStagedRunner(
 export function recordingCommitter(recorder: SessionBatchRecorder): StagedBatchCommitter {
     return {
         currentRecorder: () => recorder,
-        commit: (_progress, record) => record(recorder),
+        commit: async (_maxOffsets, record) => {
+            await record(recorder)
+        },
     }
 }
 

@@ -52,6 +52,7 @@ import { SessionFilter } from './sessions/session-filter'
 import { SessionTracker } from './sessions/session-tracker'
 import {
     STAGED_BATCH_LOOKAHEAD,
+    STAGED_BATCH_REBALANCE_TIMEOUT_MS,
     STAGED_BATCH_TIMEOUT_MS,
     StagedBatchCommitter,
     StagedBatchRunner,
@@ -181,7 +182,11 @@ export class SessionRecordingIngester {
             autoCommit: true,
             autoOffsetStore: false,
             ...(this.createStagedRunner
-                ? { maxBackgroundTasks: STAGED_BATCH_LOOKAHEAD, backgroundTaskTimeoutMs: STAGED_BATCH_TIMEOUT_MS }
+                ? {
+                      maxBackgroundTasks: STAGED_BATCH_LOOKAHEAD,
+                      backgroundTaskTimeoutMs: STAGED_BATCH_TIMEOUT_MS,
+                      rebalanceTimeoutMs: STAGED_BATCH_REBALANCE_TIMEOUT_MS,
+                  }
                 : {}),
         })
 
@@ -315,12 +320,16 @@ export class SessionRecordingIngester {
         )
     }
 
+    // A batch that outlives a revoke drain must not advance offsets for partitions this pod gave up: the new owner replays them, and an offset stored here would be for a partition it no longer holds.
     private readonly stagedCommitter: StagedBatchCommitter = {
         currentRecorder: () => this.currentBatch,
-        commit: async (progress, record) => {
-            await this.batchLock(() => record(this.currentBatch))
-            this.sessionBatchManager.trackProcessedOffsets(progress.maxOffsets)
-            this.lagReporter.record(progress.okMessages)
+        commit: async (maxOffsets, record) => {
+            const recorded = await this.batchLock(() => record(this.currentBatch))
+            const assigned = new Set(this.assignedPartitions)
+            this.sessionBatchManager.trackProcessedOffsets(
+                new Map([...maxOffsets].filter(([partition]) => assigned.has(partition)))
+            )
+            this.lagReporter.record(recorded.filter((message) => assigned.has(message.partition)))
             if (this.sessionBatchManager.shouldFlush(this.currentBatch, this.lastFlushTime)) {
                 await this.flushCurrentBatch()
             }
