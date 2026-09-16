@@ -267,7 +267,9 @@ class FakeSettings:
 async def _get_temporal_client(config: TemporalIOSourceConfig, team_id: int | None) -> Client:
     # The Temporal core dials `host:port` over gRPC from Rust, which reads no proxy environment,
     # so the egress proxy is not in this path and the host check has to happen here.
-    check_connect_host(config.host, team_id)
+    # The check resolves the host with a blocking, unbounded lookup, so it runs on a worker
+    # thread rather than on the event loop this client shares with the rest of the extraction.
+    await asyncio.to_thread(check_connect_host, config.host, team_id)
 
     if config.fallback_decryption_keys:
         fallback_keys = [k.strip() for k in config.fallback_decryption_keys.split(",") if k.strip()]

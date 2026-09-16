@@ -102,6 +102,24 @@ class TestTemporalIOClient:
 
         assert mock_connect.call_args.args[0] == "temporal.example.com:7233"
 
+    @pytest.mark.parametrize("port", ["7233@169.254.169.254:80", "not-a-port"])
+    def test_a_port_that_is_not_a_number_is_rejected(self, port):
+        # `connect()` builds the dial target from host and port, so a port that carries anything
+        # but a number moves the target past the host check.
+        payload = {
+            "host": "temporal.example.com",
+            "port": port,
+            "namespace": "namespace",
+            "server_client_root_ca": "ca",
+            "client_certificate": "cert",
+            "client_private_key": "key",
+        }
+
+        is_valid, errors = TemporalIOSource().validate_config(payload)
+
+        assert not is_valid
+        assert errors
+
     def test_creating_a_source_on_an_internal_host_is_rejected(self):
         with (
             override_settings(CLOUD_DEPLOYMENT="US"),

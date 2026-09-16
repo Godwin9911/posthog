@@ -171,15 +171,17 @@ def resolve_safe_host(host: str, team_id: int | None) -> HostResolution:
         _log_host_check(host, team_id, "block", "localhost", _INTERNAL_IP_ERROR)
         return HostResolution(connect_host=None, error=_INTERNAL_IP_ERROR)
 
+    lookup_host = unbracket_host(host)
+
     try:
-        if not _is_safe_public_ip(host):
+        if not _is_safe_public_ip(lookup_host):
             _log_host_check(host, team_id, "block", "literal_ip", _INTERNAL_IP_ERROR)
             return HostResolution(connect_host=None, error=_INTERNAL_IP_ERROR)
     except ValueError:
         pass
 
     try:
-        addrinfo = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        addrinfo = socket.getaddrinfo(lookup_host, None, proto=socket.IPPROTO_TCP)
         resolved_ips = [str(sockaddr[0]) for *_meta, sockaddr in addrinfo]
     except socket.gaierror as e:
         # A resolver blip is not a verdict on the host; refusing it would disable the schema.
@@ -269,6 +271,23 @@ def host_lookup_is_skipped() -> bool:
 
 def _normalize_host(host: str) -> str:
     return host.lower().strip().rstrip(".")
+
+
+def unbracket_host(host: str) -> str:
+    """Return an IPv6 literal without the brackets it carries inside a `host:port` string.
+
+    A client that builds `host:port` needs `[2001:db8::1]` to tell the address from the port, and
+    both `_is_safe_public_ip` and the resolver want the bare address. Anything else, a hostname or
+    an IPv4 literal, comes back unchanged.
+    """
+    inner = host.strip()
+    if not (inner.startswith("[") and inner.endswith("]")):
+        return host
+    try:
+        ipaddress.ip_address(inner[1:-1])
+    except ValueError:
+        return host
+    return inner[1:-1]
 
 
 _HOST_LABEL = re.compile(r"^(?!-)[a-z0-9_-]{1,63}(?<!-)\Z")

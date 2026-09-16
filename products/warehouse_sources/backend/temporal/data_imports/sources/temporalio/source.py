@@ -144,7 +144,7 @@ class TemporalIOSource(ValidateDatabaseHostMixin, ResumableSource[TemporalIOSour
                     SourceFieldInputConfig(
                         name="port",
                         label="Port",
-                        type=SourceFieldInputConfigType.TEXT,
+                        type=SourceFieldInputConfigType.NUMBER,
                         required=True,
                         placeholder="",
                         secret=False,
