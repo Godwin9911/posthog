@@ -11,8 +11,6 @@ export type RuntimeAdapter = 'claude' | 'codex'
 
 export type Runtime = 'acp' | 'pi'
 
-export const RUNTIMES: readonly Runtime[] = ['acp', 'pi']
-
 export interface RuntimeOption {
     runtime: Runtime
     /** Absent for Pi, which has no adapter. */

@@ -1,5 +1,3 @@
-import { RUNTIMES, type Runtime } from "./model-catalog";
-
-export const AGENT_RUNTIMES = RUNTIMES;
+import type { Runtime } from "./model-catalog";
 
 export type AgentRuntime = Runtime;

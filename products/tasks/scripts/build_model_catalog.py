@@ -154,8 +154,6 @@ def render(catalog: dict[str, Any], style: Style) -> str:
 
 {style.union(runtimes, prefix="export type Runtime = ")}
 
-{style.array(runtimes, prefix="export const RUNTIMES: readonly Runtime[] = ", suffix=semi, depth=0)}
-
 export interface RuntimeOption {{
 {i}runtime: Runtime{semi}
 {i}/** Absent for Pi, which has no adapter. */
