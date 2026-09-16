@@ -364,7 +364,11 @@ function BatchJobMetrics({ job }: { job: HogFlowBatchJob }): JSX.Element {
                 </>
             )}
 
-            <BatchJobLogs job={job} dateFrom={jobStart.toISOString()} dateTo={jobEnd.toISOString()} />
+            <BatchJobLogs
+                job={job}
+                dateFrom={jobStart.toISOString()}
+                dateTo={isFinished ? jobEnd.toISOString() : undefined}
+            />
         </div>
     )
 }
@@ -373,6 +377,9 @@ function BatchJobMetrics({ job }: { job: HogFlowBatchJob }): JSX.Element {
  * A batch run's logs key on the run rather than the workflow, so no other view returns them. That
  * hides the run-level facts a person opens this panel for: that the audience was cut at the batch
  * limit, or that the run failed before it finished enrolling.
+ *
+ * A run still in progress passes no `dateTo`, because the viewer keeps the bound it mounts with.
+ * A fixed upper bound would hide every log the run writes after the panel opens.
  */
 function BatchJobLogs({
     job,
@@ -381,7 +388,7 @@ function BatchJobLogs({
 }: {
     job: HogFlowBatchJob
     dateFrom: string
-    dateTo: string
+    dateTo?: string
 }): JSX.Element {
     return (
         <div className="flex flex-col gap-2" data-attr="workflow-batch-job-logs">
