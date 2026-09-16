@@ -64,6 +64,10 @@ class WebhookProvider(ABC):
     # does, GitHub does not), and `None` keeps the receipt for one that does not. The decision is
     # the transport's own, taken on whether the work ran at all, never on what a consumer returned.
     retry_status: int | None = None
+    # How long the forward to the owning region may take. The default suits a small JSON body; a
+    # provider whose deliveries carry uploaded files needs longer, because the forward rebuilds
+    # and re-sends every part.
+    forward_timeout_seconds: float = 3.0
 
     @abstractmethod
     def scheme(self) -> SignatureScheme:
