@@ -35,7 +35,7 @@ from posthog.models.team.extensions import get_or_create_team_extension
 from posthog.models.team.team import Team
 from posthog.models.user import User
 
-from products.tasks.backend.constants import PI_THINKING_LEVELS, REASONING_EFFORTS
+from products.tasks.backend.constants import REASONING_EFFORTS
 from products.tasks.backend.feature_flags import (
     get_model_access_error,
     get_required_model_flag,
@@ -43,7 +43,12 @@ from products.tasks.backend.feature_flags import (
 )
 from products.tasks.backend.logic.services.model_catalogue import filter_unsupported_effort
 from products.tasks.backend.models import Task, TeamTasksConfig, UserTasksConfig
-from products.tasks.backend.temporal.process_task.utils import RuntimeAdapter, validate_model_selection
+from products.tasks.backend.temporal.process_task.utils import ReasoningEffort, RuntimeAdapter, validate_model_selection
+
+# Every depth value that exists. A depth is the same kind of thing on either harness; which
+# ones a run may ask for depends on its model, which only the ACP catalogue or the Pi agent
+# can say. These checks catch a value that is not a depth at all.
+_DEPTH_VALUES = frozenset(effort.value for effort in ReasoningEffort)
 
 ACP = Task.Runtime.ACP.value
 PI = Task.Runtime.PI.value
@@ -215,7 +220,7 @@ def _resolve_from_preferences(
     if runtime == PI:
         if not model:
             return None
-        if reasoning_effort not in PI_THINKING_LEVELS:
+        if reasoning_effort not in _DEPTH_VALUES:
             reasoning_effort = None
         return ResolvedAIRunConfig(
             runtime=PI,
@@ -263,9 +268,9 @@ def validate_ai_run_preferences(
             raise ValidationError("model must be set to configure a Pi default.")
         if runtime_adapter is not None:
             raise ValidationError("runtime_adapter cannot be set with runtime 'pi' — Pi has no ACP adapter.")
-        if reasoning_effort is not None and reasoning_effort not in PI_THINKING_LEVELS:
+        if reasoning_effort is not None and reasoning_effort not in _DEPTH_VALUES:
             raise ValidationError(
-                f"Unknown thinking level '{reasoning_effort}'. Valid: {', '.join(sorted(PI_THINKING_LEVELS))}."
+                f"Unknown reasoning_effort '{reasoning_effort}'. Valid: {', '.join(sorted(_DEPTH_VALUES))}."
             )
         return
 
