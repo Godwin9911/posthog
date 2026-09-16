@@ -266,12 +266,8 @@ class FakeSettings:
 
 async def _get_temporal_client(config: TemporalIOSourceConfig, team_id: int | None) -> Client:
     # The Temporal core dials `host:port` over gRPC from Rust, which reads no proxy environment,
-    # so the egress proxy is not in this path and the check has to happen here. Dial the address
-    # the check approved: handing the core the hostname would resolve it a second time, and that
-    # is the lookup a short-TTL record answers with a private address.
-    #
-    # The lookup is blocking and unbounded, so it runs on a worker thread rather than on the event
-    # loop this client shares with the rest of the extraction.
+    # so the egress proxy is not in this path and the check has to happen here. The lookup is
+    # blocking and unbounded, so it runs on a worker thread rather than on the event loop.
     dial_host = await asyncio.to_thread(pinned_connect_host, config.host, team_id)
     # The certificate is issued for the configured name, so that name stays the TLS identity
     # whenever the dial address differs from it.

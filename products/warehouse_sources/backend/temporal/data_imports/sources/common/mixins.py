@@ -276,8 +276,7 @@ def _normalize_host(host: str) -> str:
 def unbracket_host(host: str) -> str:
     """Return an IPv6 literal without the brackets it carries inside a `host:port` string.
 
-    A client that builds `host:port` needs `[2001:db8::1]` to tell the address from the port, and
-    both `_is_safe_public_ip` and the resolver want the bare address. Anything else, a hostname or
+    Both `_is_safe_public_ip` and the resolver want the bare address. Anything else, a hostname or
     an IPv4 literal, comes back unchanged.
     """
     inner = host.strip()
@@ -293,15 +292,15 @@ def unbracket_host(host: str) -> str:
 def bracket_host(host: str) -> str:
     """Return an IPv6 address in the form a `host:port` string needs.
 
-    The inverse of `unbracket_host`: the policy answers with a bare address, and a client that
-    joins host and port with a colon cannot tell that address from its own port without the
-    brackets. A hostname or an IPv4 address comes back unchanged.
+    The inverse of `unbracket_host`: a client that joins host and port with a colon cannot tell an
+    IPv6 address from its own port. A hostname or an IPv4 address comes back unchanged.
     """
+    stripped = host.strip()
     try:
-        parsed = ipaddress.ip_address(host.strip())
+        parsed = ipaddress.ip_address(stripped)
     except ValueError:
         return host
-    return f"[{host.strip()}]" if parsed.version == 6 else host
+    return f"[{stripped}]" if parsed.version == 6 else host
 
 
 _HOST_LABEL = re.compile(r"^(?!-)[a-z0-9_-]{1,63}(?<!-)\Z")
@@ -511,30 +510,13 @@ def _pinned_ssh_host(ssh_config, team_id: int | None) -> str:
     return resolution.connect_host
 
 
-def check_connect_host(host: str, team_id: int | None) -> None:
-    """Refuse a connection to a host that resolves somewhere internal.
-
-    For a source whose client dials the host on a raw socket, which no egress proxy sees. The
-    validation layer checks the host when a source is created or updated, and the sync path then
-    goes from the stored config straight to the connection, so this is the only check a later
-    scheduled run passes through.
-
-    It checks without pinning, because the caller hands the hostname to a client that needs it
-    for TLS. A short-TTL record can therefore still answer public here and private on the dial;
-    see `resolve_safe_host`. This closes the standing exposure, not that race.
-    """
-    resolution = resolve_safe_host(host, team_id)
-    if resolution.connect_host is None:
-        raise HostNotAllowedError(f"{DATABASE_HOST_NOT_ALLOWED_ERROR}: {resolution.error or _INTERNAL_IP_ERROR}")
-
-
 def pinned_connect_host(host: str, team_id: int | None) -> str:
     """Resolve `host` and return the address to dial, ready for a `host:port` join.
 
-    The pinning counterpart to `check_connect_host`, for a client that can dial an address while
-    carrying the hostname separately for TLS. Checking alone leaves the client to resolve the name
-    a second time, and a record with a short TTL can answer public for the check and private for
-    that second lookup. Dialling what the check approved closes it.
+    For a source whose client dials the host itself, on a raw socket that no egress proxy sees.
+    A client that takes the hostname resolves it a second time, and a record with a short TTL can
+    answer public for the check and private for that second lookup. Dialling the address the check
+    approved closes that race, so the caller carries the hostname to TLS separately.
 
     The host comes back unchanged where the policy does not apply, so the caller needs no TLS
     name of its own in that case.
@@ -573,7 +555,9 @@ def _check_direct_host(config, team_id: int | None) -> None:
     activity until Temporal's `start_to_close_timeout` rather than failing fast and retryably.
     Bounding this one is the follow-up.
     """
-    check_connect_host(config.host, team_id)
+    resolution = resolve_safe_host(config.host, team_id)
+    if resolution.connect_host is None:
+        raise HostNotAllowedError(f"{DATABASE_HOST_NOT_ALLOWED_ERROR}: {resolution.error or _INTERNAL_IP_ERROR}")
 
 
 @contextmanager

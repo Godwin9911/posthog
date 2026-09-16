@@ -7,6 +7,7 @@ from django.test import override_settings
 from posthog.schema import SourceFieldInputConfig
 
 import products.warehouse_sources.backend.temporal.data_imports.sources._load_all  # noqa: F401
+from products.warehouse_sources.backend.temporal.data_imports.sources.common.mixins import ValidateDatabaseHostMixin
 from products.warehouse_sources.backend.temporal.data_imports.sources.common.registry import SourceRegistry
 
 ALL_SOURCES = SourceRegistry.get_all_sources()
@@ -179,7 +180,7 @@ def test_sources_with_a_host_field_refuse_an_internal_host(source_type):
     source = ALL_SOURCES[source_type]
     reached_over_http = str(source_type) in HOST_REACHED_OVER_HTTP
 
-    if not hasattr(source, "is_database_host_valid"):
+    if not isinstance(source, ValidateDatabaseHostMixin):
         assert reached_over_http, (
             f"{source_type} takes a host but validates nothing, so a customer can point it at an "
             f"internal address. Inherit ValidateDatabaseHostMixin and check the host on the connect "

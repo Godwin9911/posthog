@@ -282,8 +282,6 @@ class TestIsHostSafe(SimpleTestCase):
 
 
 class TestBracketHost(SimpleTestCase):
-    # A client that builds `host:port` needs the brackets back on an IPv6 address the policy
-    # returned bare, and must not add them to anything else.
     @parameterized.expand(
         [
             ("ipv6", "2606:4700:4700::1111", "[2606:4700:4700::1111]"),

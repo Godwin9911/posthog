@@ -1,5 +1,3 @@
-import socket
-
 import pytest
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -11,6 +9,7 @@ from temporalio.service import RPCError, RPCStatusCode
 from posthog.temporal.common.codec import EncryptionCodec
 
 from products.warehouse_sources.backend.temporal.data_imports.sources.common.mixins import HostNotAllowedError
+from products.warehouse_sources.backend.temporal.data_imports.sources.common.tests.resolver import addrinfo
 from products.warehouse_sources.backend.temporal.data_imports.sources.generated_configs.temporalio import (
     TemporalIOSourceConfig,
 )
@@ -33,21 +32,20 @@ def _rpc_error(message: str, status: RPCStatusCode) -> RPCError:
     return RPCError(message, status, b"")
 
 
-def _config(host: str = "temporal.example.com") -> TemporalIOSourceConfig:
-    return TemporalIOSourceConfig.from_dict(
-        {
-            "host": host,
-            "port": "7233",
-            "namespace": "namespace",
-            "server_client_root_ca": "ca",
-            "client_certificate": "cert",
-            "client_private_key": "key",
-        }
-    )
+def _payload(**overrides: str) -> dict[str, str]:
+    return {
+        "host": "temporal.example.com",
+        "port": "7233",
+        "namespace": "namespace",
+        "server_client_root_ca": "ca",
+        "client_certificate": "cert",
+        "client_private_key": "key",
+        **overrides,
+    }
 
 
-def _resolves_to(ip: str) -> list:
-    return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, 0))]
+def _config(**overrides: str) -> TemporalIOSourceConfig:
+    return TemporalIOSourceConfig.from_dict(_payload(**overrides))
 
 
 class TestTemporalIOClient:
@@ -60,17 +58,7 @@ class TestTemporalIOClient:
         assert isinstance(codec, EncryptionCodec)
 
     async def test_get_temporal_client_builds_encryption_codec(self):
-        config = TemporalIOSourceConfig.from_dict(
-            {
-                "host": "host",
-                "port": "7233",
-                "namespace": "namespace",
-                "encryption_key": "k" * 32,
-                "server_client_root_ca": "ca",
-                "client_certificate": "cert",
-                "client_private_key": "key",
-            }
-        )
+        config = _config(encryption_key="k" * 32)
 
         with patch.object(Client, "connect", new=AsyncMock(return_value=MagicMock())) as mock_connect:
             await _get_temporal_client(config, team_id=999)
@@ -82,7 +70,7 @@ class TestTemporalIOClient:
     async def test_a_host_resolving_to_an_internal_ip_is_refused_before_dialling(self, resolved_ip):
         with (
             override_settings(CLOUD_DEPLOYMENT="US"),
-            patch(f"{_MIXINS_MODULE}.socket.getaddrinfo", return_value=_resolves_to(resolved_ip)),
+            patch(f"{_MIXINS_MODULE}.socket.getaddrinfo", return_value=addrinfo(0, resolved_ip)),
             patch(f"{_MIXINS_MODULE}.logger"),
             patch.object(Client, "connect", new=AsyncMock(return_value=MagicMock())) as mock_connect,
         ):
@@ -91,47 +79,28 @@ class TestTemporalIOClient:
 
         mock_connect.assert_not_called()
 
-    async def test_the_validated_address_is_dialled_and_the_hostname_carries_tls(self):
-        # The hostname would be resolved a second time by the client, which is the lookup a
-        # short-TTL record answers differently. Dial the address that passed the check instead,
-        # and keep the hostname for the certificate.
+    @pytest.mark.parametrize(
+        "host,expected_tls_domain",
+        [("temporal.example.com", "temporal.example.com"), ("93.184.216.34", None)],
+    )
+    async def test_the_checked_address_is_dialled_and_only_a_name_carries_tls(self, host, expected_tls_domain):
+        # rustls reads the TLS domain as a DNS name, so an address there fails every handshake.
         with (
             override_settings(CLOUD_DEPLOYMENT="US"),
-            patch(f"{_MIXINS_MODULE}.socket.getaddrinfo", return_value=_resolves_to("93.184.216.34")),
+            patch(f"{_MIXINS_MODULE}.socket.getaddrinfo", return_value=addrinfo(0, "93.184.216.34")),
             patch(f"{_MIXINS_MODULE}.logger"),
             patch.object(Client, "connect", new=AsyncMock(return_value=MagicMock())) as mock_connect,
         ):
-            await _get_temporal_client(_config(), team_id=999)
+            await _get_temporal_client(_config(host=host), team_id=999)
 
         assert mock_connect.call_args.args[0] == "93.184.216.34:7233"
-        assert mock_connect.call_args.kwargs["tls"].domain == "temporal.example.com"
-
-    async def test_a_host_that_is_already_an_address_carries_no_tls_domain(self):
-        # rustls reads the domain as a DNS name, so an address there fails every handshake.
-        with (
-            override_settings(CLOUD_DEPLOYMENT="US"),
-            patch(f"{_MIXINS_MODULE}.logger"),
-            patch.object(Client, "connect", new=AsyncMock(return_value=MagicMock())) as mock_connect,
-        ):
-            await _get_temporal_client(_config(host="93.184.216.34"), team_id=999)
-
-        assert mock_connect.call_args.args[0] == "93.184.216.34:7233"
-        assert mock_connect.call_args.kwargs["tls"].domain is None
+        assert mock_connect.call_args.kwargs["tls"].domain == expected_tls_domain
 
     @pytest.mark.parametrize("port", ["7233@169.254.169.254:80", "not-a-port"])
     def test_a_port_that_is_not_a_number_is_rejected(self, port):
         # `connect()` builds the dial target from host and port, so a port that carries anything
         # but a number moves the target past the host check.
-        payload = {
-            "host": "temporal.example.com",
-            "port": port,
-            "namespace": "namespace",
-            "server_client_root_ca": "ca",
-            "client_certificate": "cert",
-            "client_private_key": "key",
-        }
-
-        is_valid, errors = TemporalIOSource().validate_config(payload)
+        is_valid, errors = TemporalIOSource().validate_config(_payload(port=port))
 
         assert not is_valid
         assert errors
@@ -139,7 +108,7 @@ class TestTemporalIOClient:
     def test_creating_a_source_on_an_internal_host_is_rejected(self):
         with (
             override_settings(CLOUD_DEPLOYMENT="US"),
-            patch(f"{_MIXINS_MODULE}.socket.getaddrinfo", return_value=_resolves_to("10.0.0.5")),
+            patch(f"{_MIXINS_MODULE}.socket.getaddrinfo", return_value=addrinfo(0, "10.0.0.5")),
             patch(f"{_MIXINS_MODULE}.logger"),
         ):
             is_valid, error = TemporalIOSource().validate_credentials(_config(), team_id=999)
