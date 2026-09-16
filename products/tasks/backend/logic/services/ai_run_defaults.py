@@ -45,9 +45,6 @@ from products.tasks.backend.logic.services.model_catalogue import filter_unsuppo
 from products.tasks.backend.models import Task, TeamTasksConfig, UserTasksConfig
 from products.tasks.backend.temporal.process_task.utils import ReasoningEffort, RuntimeAdapter, validate_model_selection
 
-# Every depth value that exists. A depth is the same kind of thing on either harness; which
-# ones a run may ask for depends on its model, which only the ACP catalogue or the Pi agent
-# can say. These checks catch a value that is not a depth at all.
 _DEPTH_VALUES = frozenset(effort.value for effort in ReasoningEffort)
 
 ACP = Task.Runtime.ACP.value

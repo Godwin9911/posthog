@@ -10,8 +10,6 @@ import type { AgentAdapter } from "@posthog/ui/features/settings/settingsStore";
 
 export type AgentHarness = AgentAdapter | "pi";
 
-// One entry per catalog runtime option. ACP's two adapters are separate picks, so the adapter
-// names the entry where there is one; Pi has no adapter, so its runtime names it.
 const harnessOptions = RUNTIME_OPTIONS.map((option) => ({
   value: (option.runtimeAdapter ?? option.runtime) as AgentHarness,
   label: option.label,

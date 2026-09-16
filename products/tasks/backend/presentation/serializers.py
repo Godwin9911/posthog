@@ -67,9 +67,6 @@ from products.tasks.backend.facade.run_config import (
 
 logger = logging.getLogger(__name__)
 
-# Every depth value that exists, for the fields either harness can reach. A depth is the same
-# kind of thing on both, so there is one list. Which of them a run may ask for depends on the
-# model it picked, and `get_reasoning_effort_error` answers that against the model's own ladder.
 TASK_RUN_REASONING_EFFORT_CHOICES = [effort.value for effort in ReasoningEffort]
 
 

@@ -87,9 +87,6 @@ class TestResolveAIRunDefaults(APIBaseTest):
         )
 
     def test_a_stored_value_that_is_not_a_depth_is_dropped(self):
-        # The admin form writes the preferences dict whole, so a value no picker offers can
-        # reach a row. Resolving must not hand the agent a string that is not a depth at all.
-        # Whether the model offers the depth is a separate question this path cannot answer.
         self._set_user({**PI_PREFS, "reasoning_effort": "deep"})
         with pi_harness():
             resolved = resolve_ai_run_defaults(self.team.id, self.user.id)

@@ -46,10 +46,6 @@ XHIGH = "xhigh"
 MAX = "max"
 ULTRACODE = "ultracode"
 
-# Every tier the models below declare, shallowest first. A consumer renders an effort
-# ladder from this, so a new tier reaches both projections by being added here and nowhere
-# else. Which tiers a run may actually ask for is a per-model question, answered by
-# `reasoning_efforts_for`.
 REASONING_EFFORTS: tuple[str, ...] = (LOW, MEDIUM, HIGH, XHIGH, MAX, ULTRACODE)
 
 _STANDARD = (LOW, MEDIUM, HIGH)
@@ -170,7 +166,6 @@ DEFAULT_MODEL_BY_RUNTIME_ADAPTER: dict[str, str] = {
 
 RUNTIME_ADAPTERS: tuple[str, ...] = tuple(PROVIDER_BY_RUNTIME_ADAPTER)
 
-# Derived rather than declared, so a new harness is one row in RUNTIME_OPTIONS.
 RUNTIMES: tuple[str, ...] = tuple(dict.fromkeys(option.runtime for option in RUNTIME_OPTIONS))
 
 # The catalog keyed the two ways it gets read. Built once from MODELS, which stays the

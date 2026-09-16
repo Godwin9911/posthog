@@ -99,14 +99,10 @@ def test_every_catalog_effort_is_a_known_reasoning_effort() -> None:
 
 
 def test_reasoning_effort_enum_covers_the_catalog() -> None:
-    # The enum is every depth value that exists, and the catalog's models declare a subset of
-    # it. A tier added to the catalog and not here is one `ReasoningEffort(...)` cannot build.
     assert set(model_catalog.REASONING_EFFORTS) <= {effort.value for effort in ReasoningEffort}
 
 
 def test_runtime_options_agree_with_the_task_runtime_column() -> None:
-    # The column is what a run is stored under, and the options are what a picker offers. A
-    # harness in one and not the other is either an unreachable option or an unstorable pick.
     assert list(Task.Runtime.values) == list(model_catalog.RUNTIMES)
 
 
