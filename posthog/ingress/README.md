@@ -212,7 +212,7 @@ Last, write `<provider>/README.md` with the fixed sections every provider README
 
 Two shapes that already exist and are worth copying rather than re-deriving:
 
-- **Several apps on one provider.** One incarnation can serve several apps, each with its own secret getter, its own subscribed event types, and its own consumer set. Consumers register against the app name. `github/` is the case.
+- **Several apps on one provider.** One incarnation can serve several apps, each with its own secret getter, its own subscribed event types, and its own consumer set. Consumers register against the app name. `github/` is the case. An app is one endpoint's consumer surface rather than one registration with the third party: Slack's events and interactivity endpoints are two apps on one Slack app registration, sharing a secret, so each endpoint validates its consumers against only the types it receives.
 - **The DRF adapter path.** An endpoint that genuinely needs DRF's team scoping keeps its view, and the incarnation contributes a scheme only, declaring no spec, because nothing dispatches there. `customerio/` is the case. The view verifies through `posthog.auth.WebhookSignatureAuthentication`, which still carries its own HMAC-SHA256 computation rather than the scheme here; moving that class onto the schemes is its own PR.
 
 ## Dedup
