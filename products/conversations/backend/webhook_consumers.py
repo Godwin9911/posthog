@@ -5,7 +5,7 @@ its own product import.
 """
 
 from posthog.ingress.contracts import DeliveryOwnership, WebhookConsumer, WebhookDelivery
-from posthog.ingress.slack.provider import SLACK_EVENT_TYPES
+from posthog.ingress.slack.provider import SLACK_EVENT_TYPES, SLACK_INTERACTIVITY_APP, SLACK_INTERACTIVITY_TYPES
 
 
 def _run_conversations(delivery: WebhookDelivery) -> None:
@@ -24,6 +24,12 @@ def _run_slack_events(delivery: WebhookDelivery) -> None:
     from products.conversations.backend.facade.api import accept_slack_event  # noqa: PLC0415
 
     accept_slack_event(delivery)
+
+
+def _run_slack_interactivity(delivery: WebhookDelivery) -> None:
+    from products.conversations.backend.facade.api import accept_slack_interactivity  # noqa: PLC0415
+
+    accept_slack_interactivity(delivery)
 
 
 def _slack_ownership(delivery: WebhookDelivery) -> DeliveryOwnership:
@@ -47,6 +53,16 @@ WEBHOOK_CONSUMERS = (
         app="supporthog",
         event_types=SLACK_EVENT_TYPES,
         handler=_run_slack_events,
+        ownership=_slack_ownership,
+    ),
+    WebhookConsumer(
+        name="conversations_slack_interactivity",
+        provider="slack",
+        app=SLACK_INTERACTIVITY_APP,
+        event_types=SLACK_INTERACTIVITY_TYPES,
+        handler=_run_slack_interactivity,
+        # The same workspace lookup as the events consumer: an interactive payload names the
+        # workspace too, so a click on a workspace the other region holds is forwarded there.
         ownership=_slack_ownership,
     ),
 )
